@@ -1,0 +1,55 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="760" height="150" viewBox="0 0 760 150" font-family="-apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif">
+  <style>
+    .pill { fill: #f5f6f8; stroke: #d4d7de; }
+    .pill-run { fill: #eef2ff; stroke: #4f6bed; }
+    .pill-fb  { fill: #fff7e6; stroke: #d9930a; }
+    .label { font-size: 13px; fill: #3a3f4b; }
+    .label-strong { font-size: 13px; fill: #1b1f27; }
+    .label-fb { font-size: 13px; fill: #b3760a; }
+    .cap { font-size: 11px; fill: #6b7280; }
+    .pulse { animation: CB-pulse 1s ease-in-out infinite; }
+    @keyframes CB-pulse { 0%{opacity:1} 50%{opacity:.35} 100%{opacity:1} }
+  </style>
+
+  <!-- running -->
+  <g transform="translate(16,40)">
+    <rect class="pill-run" width="118" height="26" rx="13"/>
+    <circle class="pulse" cx="15" cy="13" r="4.5" fill="#4f6bed"/>
+    <text class="label-strong" x="27" y="17">CB 工作中</text>
+  </g>
+  <text class="cap" x="16" y="86">running</text>
+
+  <!-- ok -->
+  <g transform="translate(150,40)">
+    <rect class="pill" width="70" height="26" rx="13"/>
+    <circle cx="15" cy="13" r="4.5" fill="#1f9d55"/>
+    <text class="label" x="27" y="17">CB</text>
+  </g>
+  <text class="cap" x="150" y="86">ok</text>
+
+  <!-- failed -->
+  <g transform="translate(236,40)">
+    <rect class="pill" width="96" height="26" rx="13"/>
+    <circle cx="15" cy="13" r="4.5" fill="#e5484d"/>
+    <text class="label" x="27" y="17">CB 失败</text>
+  </g>
+  <text class="cap" x="236" y="86">failed</text>
+
+  <!-- fallback -->
+  <g transform="translate(348,40)">
+    <rect class="pill-fb" width="96" height="26" rx="13"/>
+    <circle cx="15" cy="13" r="4.5" fill="#d9930a"/>
+    <text class="label-fb" x="27" y="17">本地回退</text>
+  </g>
+  <text class="cap" x="348" y="86">fallback</text>
+
+  <!-- idle -->
+  <g transform="translate(460,40)">
+    <rect class="pill" width="96" height="26" rx="13"/>
+    <circle cx="15" cy="13" r="4.5" fill="#9aa1ad"/>
+    <text class="label" x="27" y="17">CB 就绪</text>
+  </g>
+  <text class="cap" x="460" y="86">idle</text>
+
+  <text class="cap" x="16" y="120" font-size="12">Live status light in the session header (colours shown are indicative; the real component uses DSH theme tokens and adapts to light/dark).</text>
+</svg>

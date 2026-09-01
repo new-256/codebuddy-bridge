@@ -1,0 +1,31 @@
+{
+  "name": "codebuddy-first-bridge",
+  "version": "1.0.0",
+  "private": true,
+  "description": "codebuddy-first bridge for DeepSeek Harness (DSH): prioritize the local codebuddy CLI in every mode (full DSH control, no prompts), with a rate-limit/network fallback dialog, a live status light (dynamic form + home-level plugin), per-project token usage accounting, and a zero-dependency MCP server so any MCP-capable agent (Claude Code / Codex / Cherry Studio …) discovers codebuddy itself.",
+  "license": "MIT",
+  "engines": {
+    "node": ">=18"
+  },
+  "scripts": {
+    "build": "node scripts/build.mjs",
+    "test": "node scripts/build.mjs --check && node --test",
+    "check": "node mcp/codebuddy-mcp-server.mjs --check && node scripts/verify.mjs && npm test"
+  },
+  "files": [
+    "core/",
+    "preset/",
+    "home-plugin/",
+    "dynamic/",
+    "mcp/",
+    "scripts/"
+  ],
+  "keywords": [
+    "dsh",
+    "cordis",
+    "codebuddy",
+    "mcp",
+    "agent",
+    "deepseek-harness"
+  ]
+}

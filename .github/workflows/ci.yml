@@ -1,0 +1,130 @@
+name: check
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  syntax:
+    name: node --check (${{ matrix.node }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        node: ['18', '20', '22']
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Node.js ${{ matrix.node }}
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+
+      # The plugin is dependency-free plain JavaScript. We only assert that every
+      # shipped source file parses. dynamic/host.js and dynamic/client.js are
+      # Cordis function BODIES (they contain a top-level `return`), so they are
+      # wrapped in a function before `node --check`.
+      - name: Syntax-check core + preset modules
+        run: |
+          node --check core/codebuddy-core.mjs
+          node --check preset/codebuddy-first/codebuddy-first-bridge.mjs
+          node --check preset/codebuddy-first/codebuddy-core.mjs
+
+      - name: Syntax-check home-level plugin (codebuddy-indicator)
+        run: |
+          node --check home-plugin/codebuddy-indicator/lib/index.mjs
+          node --check home-plugin/codebuddy-indicator/lib/client.js
+
+      - name: Syntax-check and self-test MCP server
+        run: |
+          node --check mcp/codebuddy-mcp-server.mjs
+          node mcp/codebuddy-mcp-server.mjs --check
+
+      - name: Syntax-check dynamic bodies
+        shell: bash
+        run: |
+          set -e
+          for f in dynamic/host.js dynamic/client.js; do
+            printf 'function __wrap(harness){\n' > "/tmp/$(basename "$f").mjs"
+            cat "$f" >> "/tmp/$(basename "$f").mjs"
+            printf '\n}\n' >> "/tmp/$(basename "$f").mjs"
+            node --check "/tmp/$(basename "$f").mjs"
+            echo "ok: $f"
+          done
+
+  test:
+    name: unit + e2e tests (node 20)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      # 同步锁定：改了 core/template 而忘记 node scripts/build.mjs 时先在这里失败
+      - name: Derived artifacts in sync (dynamic/host.js + preset core copy)
+        run: node scripts/build.mjs --check
+
+      - name: Release metadata sync (package.json ↔ MCP VERSION ↔ CHANGELOG)
+        run: node scripts/verify.mjs
+
+      # 无依赖套件：纯函数/状态引擎/行流 + 故障注入回归（dynamic 沙箱模拟、
+      # preset 适配层）+ MCP stdio 端到端（伪 codebuddy 夹具，不起真实 codebuddy）
+      - name: Run node:test suite
+        run: node --test
+
+  yaml:
+    name: validate composition YAML
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Parse and structurally assert preset YAML
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          import yaml
+
+          # agent.cordis.yml carries harness-specific custom tags such as
+          # `!!js <expression>` (used by the shipped `standard` preset for
+          # platform-gated rows). A stock YAML parser does not know them, so we
+          # register a permissive loader that accepts any unknown tag; structural
+          # ASSERTIONS below still catch drift (a row with a mistyped id/name or a
+          # missing bridge registration fails this job, not just the parse).
+          class Lenient(yaml.SafeLoader):
+              pass
+          Lenient.add_multi_constructor("", lambda loader, suffix, node: None)
+
+          # ── agent.cordis.yml ─────────────────────────────────────────────
+          with open("preset/codebuddy-first/agent.cordis.yml", encoding="utf-8") as fh:
+              doc = yaml.load(fh, Loader=Lenient)
+          assert isinstance(doc, list) and doc, "agent.cordis.yml must be a non-empty list of rows"
+
+          def find_row(rows, rid):
+              for r in rows:
+                  if isinstance(r, dict) and r.get("id") == rid:
+                      return r
+                  if isinstance(r, dict) and isinstance(r.get("config"), list):
+                      hit = find_row(r["config"], rid)
+                      if hit is not None:
+                          return hit
+              return None
+
+          bridge = find_row(doc, "codebuddy-first-bridge")
+          assert bridge is not None, "row id 'codebuddy-first-bridge' missing from agent.cordis.yml"
+          assert bridge.get("name") == "./codebuddy-first-bridge.mjs", \
+              f"bridge row name must be './codebuddy-first-bridge.mjs', got {bridge.get('name')!r}"
+
+          for rid in ("persona", "tool-fs", "tool-pwsh", "tool-bash", "tool-jobs", "tool-ask-user"):
+              assert find_row(doc, rid) is not None, f"expected row id {rid!r} missing"
+
+          # ── preset.yml ───────────────────────────────────────────────────
+          with open("preset/codebuddy-first/preset.yml", encoding="utf-8") as fh:
+              meta = yaml.load(fh, Loader=Lenient)
+          assert isinstance(meta, dict), "preset.yml must be a mapping"
+          assert isinstance(meta.get("name"), str) and meta["name"].strip(), "preset.yml needs a non-empty name"
+          assert isinstance(meta.get("description"), str) and meta["description"].strip(), "preset.yml needs a non-empty description"
+
+          print("ok: preset YAML structurally valid")
+          PY
