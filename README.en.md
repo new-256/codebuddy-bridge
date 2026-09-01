@@ -97,14 +97,15 @@ In a DSH session that has Cordis capabilities loaded, define and activate the pl
 
 ## Tool usage
 
-`codebuddy_run(prompt, mode?, model?, effort?, maxTurns?, cwd?, addDirs?, timeoutSec?, background?)`
+`codebuddy_run(prompt, mode?, model?, effort?, maxTurns?, cwd?, addDirs?, timeoutSec?, background?, backend?)`
 
+- `backend`: **dual-backend dispatch** (v1.1.0). `codebuddy` (default — CodeBuddy Code, coding scenarios) or `workbuddy` (Tencent WorkBuddy, the same-engine office-scenario sibling: documents/slides/spreadsheets, knowledge-base lookups, image/video generation, WeChat/WeCom replies). The two CLIs keep separate session stores; `codebuddy_continue` routes back to the backend owning the sessionId automatically — an explicit `backend` always wins.
 - `mode`: `auto` (default — follows DSH plan state, choosing `plan`/`accept-edits`), `plan`, `accept-edits`.
 - `effort`: `minimal / low / medium / high / xhigh / max`; optional `maxTurns` (1-500, default unlimited).
 - `background: true`: run as a background job and return a `jobId`; collect via `job_output`.
-- Returns: `{ ok, status, response, sessionId, durationSeconds, numTurns, totalTokens, exitCode, mode, stderr }`; on fallback it is `{ ok:false, fallback:true, status:'FALLBACK_TO_DSH', ... }`.
+- Returns: `{ ok, status, response, sessionId, durationSeconds, numTurns, totalTokens, exitCode, mode, backend, stderr }`; on fallback it is `{ ok:false, fallback:true, status:'FALLBACK_TO_DSH', ... }`.
 
-`codebuddy_continue(prompt, sessionId? | latest?, ...)` — continue an existing codebuddy conversation (`--resume <sessionId>` / `--continue`); other parameters as above.
+`codebuddy_continue(prompt, sessionId? | latest?, ...)` — continue an existing conversation (`--resume <sessionId>` / `--continue`); other parameters as above; without an explicit `backend` it routes to the CLI owning the sessionId.
 
 `codebuddy_status(cwd?)` — **live observation + usage accounting**: returns a snapshot of what codebuddy is doing right now (`{ state, running, current, trail, lastStatus, lastSessionId, runs, totalTokens, updatedAt, projects[] }`). `projects[]` is sectioned per project (working directory): `current` is the step that project is executing right now (tool name + arguments, or thinking/typing); `trail` is its recent step history; `runs`/`totalTokens` are the **project-cumulative call count and token usage** (codebuddy has no plan/quota API, so token metering is the available substitute). Optional `cwd` filters to one project. Callable while `codebuddy_run`/`codebuddy_continue` is in flight, no waiting.
 
@@ -128,7 +129,7 @@ codebuddy-first-bridge/
 ├─ README.md / README.en.md
 ├─ LICENSE
 ├─ .gitignore
-├─ package.json                    # version metadata (v1.0.0, Node >=18) + scripts (build/test/check)
+├─ package.json                    # version metadata (v1.1.0, Node >=18) + scripts (build/test/check)
 ├─ MCP-POLICY.md                   # disclose-and-prefer policy for external agents (also ~/.claude/CLAUDE.md, ~/.codex/AGENTS.md)
 ├─ .github/workflows/ci.yml       # node --check + test suite + version/YAML structural validation (Node 18/20/22)
 ├─ assets/indicator-states.svg    # status-light states diagram
@@ -175,6 +176,7 @@ Semantic versioning via `package.json` + Git tags + GitHub Releases (see [docs/C
 
 | Version | Highlights |
 | --- | --- |
+| [v1.1.0](https://github.com/new-256/codebuddy-bridge/releases/tag/v1.1.0) | **Dual backend: WorkBuddy**. `backend="workbuddy"` dispatches office tasks (documents/slides/spreadsheets, knowledge base, image/video generation, WeChat/WeCom replies) to Tencent WorkBuddy — a **same-engine twin CLI** of CodeBuddy (identical stream-json protocol, verified field-by-field), sharing login with the desktop app. **Session-aware backend routing**: the two CLIs keep separate session stores; continuing a session routes back to the owning CLI automatically. Results carry a `backend` field; status shows a `[workbuddy]` tag; the MCP server returns an install-hint error when WorkBuddy is missing. Test suite extended to 49 |
 | [v1.0.0](https://github.com/new-256/codebuddy-bridge/releases/tag/v1.0.0) | **First official release**: `codebuddy_run` / `codebuddy_continue` / `codebuddy_status` tools + codebuddy-first policy + fallback dialog + home-level live status light + dynamic form + zero-dependency MCP server (with the `CODEBUDDY_MCP_ALLOWED_ROOTS` whitelist guard) + per-project token usage accounting (codebuddy exposes no quota API — token metering as the substitute) + `model`/`effort`/`maxTurns` selection; a shared `core/` (single source of truth + generated derived artifacts + sync-lock); a reliability baseline (status tool survives every failure path, session-aware cwd fallback, single-shot dialog, background hang guard, narrowed rate-limit detection, cross-chunk half-line-safe parsing) locked by 44 fault-injection regression tests, CI syntax matrix + tests + version triple-lock |
 
 ## Security notes

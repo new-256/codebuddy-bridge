@@ -21,6 +21,7 @@ export const LIMIT_RE = /rate.?limit|ratelimit|\b429\b|too many|quota|insufficie
 export const MAX_TRAIL = 12
 export const MAX_ARG_LEN = 120
 export const MAX_PROJECTS = 12
+export const MAX_SESSIONS = 256
 
 // ── 纯函数 ────────────────────────────────────────────────────────────────────
 
@@ -78,7 +79,9 @@ export function parseCodebuddyJson(stdoutText) {
 }
 
 // result 事件 → 统一结果对象（ok/status/response/sessionId/tokens/…）。
-export function buildResult(parsed, outcome, mode, stderrText, stdoutText) {
+// backend 记录本次调用走的是哪个 CLI（'codebuddy' | 'workbuddy'）。
+export function buildResult(parsed, outcome, mode, stderrText, stdoutText, backend) {
+  const bk = backend || 'codebuddy'
   const exitCode = outcome ? outcome.exitCode : null
   const errText = parsed && typeof parsed.error === 'string' && parsed.error ? parsed.error : ''
   const stderr = (stderrText ? String(stderrText).slice(-2000) : '') + (errText ? (stderrText ? ' ' : '') + errText : '')
@@ -95,6 +98,7 @@ export function buildResult(parsed, outcome, mode, stderrText, stdoutText) {
         ? (parsed.usage.input_tokens + parsed.usage.output_tokens) : null,
       exitCode: exitCode,
       mode: mode,
+      backend: bk,
       stderr: stderr
     }
   }
@@ -108,6 +112,7 @@ export function buildResult(parsed, outcome, mode, stderrText, stdoutText) {
     totalTokens: null,
     exitCode: exitCode,
     mode: mode,
+    backend: bk,
     stderr: stderr,
     rawStdout: String(stdoutText || '').slice(-2000)
   }
@@ -140,7 +145,7 @@ export function buildArgv(prefix, args, opts) {
 
 // 回退结果（用户在弹窗选择「使用 DSH 本地 API 配置」后返回给调用方的标记）。
 export function fallbackResult(res, mode) {
-  return { ok: false, fallback: true, status: 'FALLBACK_TO_DSH', response: '', sessionId: (res && res.sessionId) || null, durationSeconds: null, numTurns: null, totalTokens: null, exitCode: res ? res.exitCode : null, mode: mode, stderr: res ? res.stderr : '', reason: res ? res.status : 'unknown' }
+  return { ok: false, fallback: true, status: 'FALLBACK_TO_DSH', response: '', sessionId: (res && res.sessionId) || null, durationSeconds: null, numTurns: null, totalTokens: null, exitCode: res ? res.exitCode : null, mode: mode, backend: (res && res.backend) || 'codebuddy', stderr: res ? res.stderr : '', reason: res ? res.status : 'unknown' }
 }
 
 export function projectName(cwd) {
@@ -174,6 +179,11 @@ export function createLineStream(consumeLine) {
 export function createStatusEngine(opts) {
   const publish = (opts && typeof opts.publish === 'function') ? opts.publish : null
   const projects = Object.create(null)
+  // sessionId → { cwd, backend }。两个 CLI 各自归档会话（~/.codebuddy 与
+  // ~/.workbuddy），同一个 sessionId 只在其中一个后端有效；且同一项目可先后
+  // 跑多个后端（项目级 lastSessionId 只记最后一个）。续接时按此表一次解析出
+  // cwd 与后端。容量上限 MAX_SESSIONS，FIFO 淘汰。
+  const sessions = Object.create(null)
 
   function ensureProject(cwd) {
     const key = String(cwd || '')
@@ -186,7 +196,7 @@ export function createStatusEngine(opts) {
         const victim = pool.sort(function (a, b) { return projects[a].updatedAt - projects[b].updatedAt })[0]
         delete projects[victim]
       }
-      p = { cwd: key, name: projectName(key), state: 'idle', running: 0, lastStatus: null, lastAt: 0, lastSessionId: null, lastOk: false, lastFailed: false, fallbackActive: false, current: null, trail: [], runs: 0, totalTokens: 0, updatedAt: 0 }
+      p = { cwd: key, name: projectName(key), state: 'idle', running: 0, lastStatus: null, lastAt: 0, lastSessionId: null, lastBackend: null, lastOk: false, lastFailed: false, fallbackActive: false, current: null, trail: [], runs: 0, totalTokens: 0, updatedAt: 0 }
       projects[key] = p
     }
     return p
@@ -194,12 +204,12 @@ export function createStatusEngine(opts) {
 
   function globalStatus() {
     const list = Object.keys(projects).map(function (k) { return projects[k] })
-    let running = 0, lastStatus = null, lastAt = 0, lastSessionId = null, fallbackActive = false, current = null, trail = [], updatedAt = 0, runs = 0, totalTokens = 0
+    let running = 0, lastStatus = null, lastAt = 0, lastSessionId = null, lastBackend = null, fallbackActive = false, current = null, trail = [], updatedAt = 0, runs = 0, totalTokens = 0
     for (const p of list) {
       running += p.running
       if (p.updatedAt > updatedAt) updatedAt = p.updatedAt
       if (p.running > 0 && !current && p.current) current = p.current
-      if (p.lastAt > lastAt) { lastAt = p.lastAt; lastStatus = p.lastStatus; lastSessionId = p.lastSessionId }
+      if (p.lastAt > lastAt) { lastAt = p.lastAt; lastStatus = p.lastStatus; lastSessionId = p.lastSessionId; lastBackend = p.lastBackend }
       if (p.fallbackActive) fallbackActive = true
       runs += p.runs || 0
       totalTokens += p.totalTokens || 0
@@ -208,15 +218,15 @@ export function createStatusEngine(opts) {
     trail.sort(function (a, b) { return (a.at < b.at ? -1 : a.at > b.at ? 1 : 0) })
     trail = trail.slice(-MAX_TRAIL)
     const state = running > 0 ? 'running' : (fallbackActive ? 'fallback' : (lastStatus ? (lastStatus === 'SUCCESS' ? 'ok' : 'failed') : 'idle'))
-    return { state: state, running: running, lastStatus: lastStatus, lastAt: lastAt, lastSessionId: lastSessionId, fallbackActive: fallbackActive, current: current, trail: trail, runs: runs, totalTokens: totalTokens, updatedAt: updatedAt }
+    return { state: state, running: running, lastStatus: lastStatus, lastAt: lastAt, lastSessionId: lastSessionId, lastBackend: lastBackend, fallbackActive: fallbackActive, current: current, trail: trail, runs: runs, totalTokens: totalTokens, updatedAt: updatedAt }
   }
 
   function statusSnapshot() {
     const g = globalStatus()
     const list = Object.keys(projects).map(function (k) { return projects[k] }).sort(function (a, b) { return b.updatedAt - a.updatedAt })
     return {
-      state: g.state, running: g.running, lastStatus: g.lastStatus, lastAt: g.lastAt, lastSessionId: g.lastSessionId, fallbackActive: g.fallbackActive, current: g.current, trail: g.trail, runs: g.runs, totalTokens: g.totalTokens, updatedAt: g.updatedAt,
-      projects: list.map(function (p) { return { cwd: p.cwd, name: p.name, state: p.state, running: p.running, current: p.current, trail: p.trail.slice(-MAX_TRAIL), lastStatus: p.lastStatus, lastAt: p.lastAt, lastSessionId: p.lastSessionId, fallbackActive: p.fallbackActive, runs: p.runs || 0, totalTokens: p.totalTokens || 0, updatedAt: p.updatedAt } })
+      state: g.state, running: g.running, lastStatus: g.lastStatus, lastAt: g.lastAt, lastSessionId: g.lastSessionId, lastBackend: g.lastBackend, fallbackActive: g.fallbackActive, current: g.current, trail: g.trail, runs: g.runs, totalTokens: g.totalTokens, updatedAt: g.updatedAt,
+      projects: list.map(function (p) { return { cwd: p.cwd, name: p.name, state: p.state, running: p.running, current: p.current, trail: p.trail.slice(-MAX_TRAIL), lastStatus: p.lastStatus, lastAt: p.lastAt, lastSessionId: p.lastSessionId, lastBackend: p.lastBackend, fallbackActive: p.fallbackActive, runs: p.runs || 0, totalTokens: p.totalTokens || 0, updatedAt: p.updatedAt } })
     }
   }
 
@@ -235,8 +245,16 @@ export function createStatusEngine(opts) {
     p.running = Math.max(0, p.running - 1)
     p.lastStatus = res ? res.status : null
     p.lastAt = Date.now()
-    if (res && res.sessionId) p.lastSessionId = res.sessionId
-    // 用量累计（codebuddy 无套餐额度 API，以按项目 token 计量作替代观察）
+    if (res && res.sessionId) {
+      p.lastSessionId = res.sessionId
+      // 记录该会话的 cwd 与后端：续接（--resume）时按 sessionId 一次查表，
+      // 即可同时得到正确的工作目录与正确的 CLI（显式参数优先）。
+      sessions[res.sessionId] = { cwd: p.cwd, backend: res.backend || 'codebuddy' }
+      const keys = Object.keys(sessions)
+      if (keys.length > MAX_SESSIONS) delete sessions[keys[0]]
+    }
+    if (res) p.lastBackend = res.backend || 'codebuddy'
+    // 用量累计（无套餐额度 API，以按项目 token 计量作替代观察）
     p.runs = (p.runs || 0) + 1
     if (res && typeof res.totalTokens === 'number' && res.totalTokens > 0) p.totalTokens = (p.totalTokens || 0) + res.totalTokens
     if (res && res.fallback) { p.fallbackActive = true; p.state = 'fallback' }
@@ -282,37 +300,57 @@ export function createStatusEngine(opts) {
     emit()
   }
 
-  // codebuddy 会话按项目目录（cwd）归档：续接（--resume/--continue）未显式给
-  // cwd 时，优先回落到该 session 所在项目的 cwd，否则换个目录会
-  // "No conversation found with session ID"。
-  function resolveCwd(args, fallbackCwd) {
-    if (args && args.cwd) return String(args.cwd)
-    if (args && (args.sessionId || args.continueLatest)) {
+  // 会话路由（cwd + backend 一次解析）。CLI 会话按项目目录（cwd）归档，且
+  // codebuddy / workbuddy 各自维护独立会话存储（~/.codebuddy 与 ~/.workbuddy）：
+  //   - 显式 cwd 优先；未给 cwd 的续接（--resume/--continue）回落到该 session
+  //     所在项目的 cwd（否则换目录报 "No conversation found"）。
+  //   - backend：显式 args.backend 由 runner 层处理（此处不越权）；否则按
+  //     sessionId 查该会话的后端；continueLatest 用最近项目的后端；都没有则
+  //     返回 null（调用方取默认 codebuddy）。
+  function resolveTarget(args, fallbackCwd) {
+    const a = args || {}
+    let backend = null
+    let cwd = null
+    if (a.sessionId) {
+      const hit = sessions[a.sessionId]
+      if (hit) { backend = hit.backend; cwd = hit.cwd }
+    }
+    if (a.cwd) {
+      cwd = String(a.cwd)
+    } else if (!cwd && (a.sessionId || a.continueLatest)) {
+      // 会话表未命中（容量淘汰 / 跨进程）时回落项目级匹配。
       const list = Object.keys(projects).map(function (k) { return projects[k] }).sort(function (a, b) { return b.updatedAt - a.updatedAt })
-      if (args.sessionId) {
-        const hit = list.find(function (p) { return p.lastSessionId === args.sessionId })
-        if (hit) return hit.cwd
+      if (a.sessionId) {
+        const projHit = list.find(function (p) { return p.lastSessionId === a.sessionId })
+        if (projHit) { cwd = projHit.cwd; if (!backend) backend = projHit.lastBackend }
       } else if (list.length && list[0].lastSessionId) {
-        return list[0].cwd
+        cwd = list[0].cwd
+        if (!backend) backend = list[0].lastBackend
       }
     }
-    return fallbackCwd
+    return { cwd: cwd || fallbackCwd, backend: backend }
   }
 
-  return { projects: projects, ensureProject: ensureProject, globalStatus: globalStatus, statusSnapshot: statusSnapshot, begin: begin, end: end, foldEvent: foldEvent, resolveCwd: resolveCwd }
+  // 兼容旧签名：只取 cwd。
+  function resolveCwd(args, fallbackCwd) {
+    return resolveTarget(args, fallbackCwd).cwd
+  }
+
+  return { projects: projects, ensureProject: ensureProject, globalStatus: globalStatus, statusSnapshot: statusSnapshot, begin: begin, end: end, foldEvent: foldEvent, resolveCwd: resolveCwd, resolveTarget: resolveTarget, sessions: sessions }
 }
 
 // ── 工具渲染（preset 与 dynamic 共用的纯展示层）─────────────────────────────
 
 export function renderResult(value) {
   const v = value || {}
+  const bk = v.backend || 'codebuddy'
   if (v.background) {
-    return [{ type: 'text', text: 'codebuddy dispatched in background (mode=' + v.mode + '). jobId=' + v.jobId + '. Collect with job_output.' }]
+    return [{ type: 'text', text: bk + ' dispatched in background (mode=' + v.mode + '). jobId=' + v.jobId + '. Collect with job_output.' }]
   }
   if (v.fallback) {
-    return [{ type: 'text', text: 'codebuddy 回退：用户选择使用 DSH 本地 API 配置（原因 ' + v.reason + '）。请改用原生工具/本地模型完成本任务，不要再调 codebuddy。' }]
+    return [{ type: 'text', text: bk + ' 回退：用户选择使用 DSH 本地 API 配置（原因 ' + v.reason + '）。请改用原生工具/本地模型完成本任务，不要再调 ' + bk + '。' }]
   }
-  const head = 'codebuddy ' + (v.ok ? 'OK' : 'FAILED') + ' [status=' + v.status + ' mode=' + v.mode + (v.sessionId ? ' session=' + v.sessionId : '') + (v.totalTokens != null ? ' tokens=' + v.totalTokens : '') + (v.durationSeconds != null ? ' ' + v.durationSeconds + 's' : '') + ']'
+  const head = bk + ' ' + (v.ok ? 'OK' : 'FAILED') + ' [status=' + v.status + ' mode=' + v.mode + (v.sessionId ? ' session=' + v.sessionId : '') + (v.totalTokens != null ? ' tokens=' + v.totalTokens : '') + (v.durationSeconds != null ? ' ' + v.durationSeconds + 's' : '') + ']'
   const body = v.response ? v.response : (v.stderr ? '[stderr] ' + v.stderr : (v.rawStdout ? '[raw] ' + v.rawStdout : ''))
   return [{ type: 'text', text: head + (body ? '\n\n' + body : '') }]
 }
@@ -326,7 +364,8 @@ export function renderStatus(value) {
     for (const p of projList) {
       const cur = p.current ? (' step ' + p.current.stepIndex + ' → ' + p.current.tool + (p.current.args ? ' ' + JSON.stringify(p.current.args) : '')) : (p.running > 0 ? ' (starting / thinking)' : '')
       const usage = (p.runs ? ' | Σ ' + p.runs + ' runs · ' + (p.totalTokens || 0) + ' tokens' : '')
-      lines.push('· ' + p.name + ' [' + p.state + (p.running > 0 ? ' ×' + p.running : '') + ']' + cur + (p.lastStatus ? ' | last=' + p.lastStatus + (p.lastSessionId ? ' ' + p.lastSessionId.slice(0, 8) : '') : '') + usage)
+      const bkTag = (p.lastBackend && p.lastBackend !== 'codebuddy') ? ' [' + p.lastBackend + ']' : ''
+      lines.push('· ' + p.name + ' [' + p.state + (p.running > 0 ? ' ×' + p.running : '') + ']' + bkTag + cur + (p.lastStatus ? ' | last=' + p.lastStatus + (p.lastSessionId ? ' ' + p.lastSessionId.slice(0, 8) : '') : '') + usage)
       if (p.trail && p.trail.length) {
         lines.push('    steps:')
         for (const e of p.trail.slice(-3)) { const a = e.args ? ' ' + JSON.stringify(e.args) : ''; lines.push('      [' + e.state + '] step ' + e.stepIndex + ' ' + e.tool + a) }
@@ -365,7 +404,9 @@ export const POLICY_TEXT = [
   '',
   'Fallback protocol: when codebuddy is rate-limited or the network is down, codebuddy_run/codebuddy_continue automatically pop a confirmation dialog asking the user whether to use the DSH local API config. If the returned result has fallback=true (status FALLBACK_TO_DSH), the user chose to fall back: complete the task with native DSH tools / the local model and DO NOT call codebuddy again for this task. If ok=false without fallback, report the codebuddy error. Never loop codebuddy calls; never ask codebuddy to call back into DSH.',
   '',
-  'Model selection: codebuddy_run takes an optional model. When unspecified, codebuddy uses its configured default model (currently hy4-preview). Supported models: hy4-preview, hy3, hy3-x, glm-5.3, glm-5.3-flash, glm-5.2, glm-5.1, glm-5v-turbo, minimax-m3, minimax-m2.7, kimi-k3-1, kimi-k2.7, kimi-k2.6, deepseek-v4-pro, deepseek-v4-flash. Pass a model only when the task clearly benefits from a specific one (e.g. a heavyweight refactor vs a quick lookup); the default is usually right. Optional effort: minimal/low/medium/high/xhigh/max. Optional maxTurns caps agentic turns (default unlimited).'
+  'Model selection: codebuddy_run takes an optional model. When unspecified, codebuddy uses its configured default model (currently hy4-preview). Supported models: hy4-preview, hy3, hy3-x, glm-5.3, glm-5.3-flash, glm-5.2, glm-5.1, glm-5v-turbo, minimax-m3, minimax-m2.7, kimi-k3-1, kimi-k2.7, kimi-k2.6, deepseek-v4-pro, deepseek-v4-flash. Pass a model only when the task clearly benefits from a specific one (e.g. a heavyweight refactor vs a quick lookup); the default is usually right. Optional effort: minimal/low/medium/high/xhigh/max. Optional maxTurns caps agentic turns (default unlimited).',
+  '',
+  'Backends: codebuddy_run/codebuddy_continue take an optional backend parameter. Default "codebuddy" (Tencent CodeBuddy Code) for coding work. "workbuddy" (Tencent WorkBuddy, the office-scenario sibling of the same engine, sharing the same login) excels at office tasks: documents, slides, spreadsheets, knowledge-base lookups, image/video generation, and sending WeChat/WeCom replies. When the user asks for office/document/IM work, dispatch with backend="workbuddy"; codebuddy and workbuddy keep separate session stores, and continuing a session automatically routes back to the backend that owns it (explicit backend wins).'
 ].join('\n')
 
 // ── 执行编排（preset 与 dynamic 共用；MCP 的 stdio 编排见其适配层）──────────
@@ -373,7 +414,7 @@ export const POLICY_TEXT = [
 //   ctx,                     // Cordis ctx（interval/timeout/get）
 //   subprocess,              // DSH subprocess 服务
 //   engine,                  // createStatusEngine(...) 实例
-//   resolveCodebuddyExe,     // async (execSignal) => 'exe' | [nodeExe, binPath]
+//   resolveExe,              // async (backend, execSignal) => 'exe' | [nodeExe, binPath]
 //   getCwdFallback,          // () => 默认 cwd（DSH workspaceRoot || 常量）
 //   defaultMode              // 'auto'（DSH preset/dynamic）
 // }
@@ -448,13 +489,14 @@ export function createRunner(o) {
   async function askFallback(exec, res, canRetry) {
     const uq = ctx.get('userQuestions')
     if (!uq || !exec || !exec.agent) return 'error'
+    const bk = (res && res.backend) || 'codebuddy'
     const detail = String(res.stderr || res.response || res.status || '').slice(-600)
     // canRetry=false 时不再提供「重试」选项（已达 2 次上限），避免死选项。
-    const opts = [ { label: FALLBACK_LABEL, description: '本次改由 DSH 本地模型/原生工具完成，不再走 codebuddy' } ]
-    if (canRetry) opts.push({ label: RETRY_LABEL, description: '再调用一次 codebuddy（网络抖动时可用）' })
-    opts.push({ label: CANCEL_LABEL, description: '不回退，直接返回 codebuddy 错误' })
+    const opts = [ { label: FALLBACK_LABEL, description: '本次改由 DSH 本地模型/原生工具完成，不再走 ' + bk } ]
+    if (canRetry) opts.push({ label: RETRY_LABEL, description: '再调用一次 ' + bk + '（网络抖动时可用）' })
+    opts.push({ label: CANCEL_LABEL, description: '不回退，直接返回 ' + bk + ' 错误' })
     try {
-      const ans = await uq.ask({ agent: exec.agent, signal: exec.signal, questions: [{ id: 'codebuddy-fallback', header: 'codebuddy 受限', question: 'codebuddy 调用失败（疑似流量受限/网络不通，状态=' + String(res.status) + '）。是否改用 DSH 本地 API 配置继续？', detail: detail, options: opts }] })
+      const ans = await uq.ask({ agent: exec.agent, signal: exec.signal, questions: [{ id: 'codebuddy-fallback', header: bk + ' 受限', question: bk + ' 调用失败（疑似流量受限/网络不通，状态=' + String(res.status) + '）。是否改用 DSH 本地 API 配置继续？', detail: detail, options: opts }] })
       const sel = (ans && ans.answers && ans.answers[0] && ans.answers[0].selected) || []
       if (sel.indexOf(FALLBACK_LABEL) >= 0) return 'fallback'
       if (sel.indexOf(RETRY_LABEL) >= 0) return 'retry'
@@ -465,21 +507,25 @@ export function createRunner(o) {
   async function coreExecute(rawArgs, exec) {
     const args = rawArgs || {}
     if (!args.prompt || !String(args.prompt).trim()) {
-      return { ok: false, status: 'BAD_ARGS', response: '', sessionId: null, durationSeconds: null, numTurns: null, totalTokens: null, exitCode: null, mode: 'auto', stderr: 'prompt is required' }
+      return { ok: false, status: 'BAD_ARGS', response: '', sessionId: null, durationSeconds: null, numTurns: null, totalTokens: null, exitCode: null, mode: 'auto', backend: args.backend || null, stderr: 'prompt is required' }
     }
+    // 后端路由：显式 args.backend 最优先；否则按会话归属（codebuddy/workbuddy
+    // 各自维护独立会话存储），都没有则默认 codebuddy。cwd 与 backend 一次解析。
+    const target = engine.resolveTarget(args, o.getCwdFallback())
+    const backend = (args.backend === 'workbuddy' || args.backend === 'codebuddy') ? args.backend : (target.backend || 'codebuddy')
+    const cwd = target.cwd
     let exePrefix = ['codebuddy']
     let exeOk = true
     let resolveErr = ''
     try {
-      const resExe = await o.resolveCodebuddyExe(exec ? exec.signal : undefined)
+      const resExe = await o.resolveExe(backend, exec ? exec.signal : undefined)
       exePrefix = Array.isArray(resExe) ? resExe : [resExe]
     } catch (e) { exeOk = false; resolveErr = String(e && e.message || e) }
-    const cwd = engine.resolveCwd(args, o.getCwdFallback())
     const built = buildArgv(exePrefix, args, { planActive: o.planActiveFor ? o.planActiveFor(exec) : false, defaultMode: o.defaultMode || 'auto' })
 
     if (!exeOk) {
       engine.begin(cwd)
-      let res = { ok: false, status: 'CODEBUDDY_UNAVAILABLE', response: '', sessionId: null, durationSeconds: null, numTurns: null, totalTokens: null, exitCode: null, mode: built.mode, stderr: 'codebuddy executable not found: ' + resolveErr }
+      let res = { ok: false, status: 'CODEBUDDY_UNAVAILABLE', response: '', sessionId: null, durationSeconds: null, numTurns: null, totalTokens: null, exitCode: null, mode: built.mode, backend: backend, stderr: backend + ' executable not found: ' + resolveErr }
       if (await askFallback(exec, res, true) === 'fallback') res = fallbackResult(res, built.mode)
       engine.end(res, cwd)
       return res
@@ -491,7 +537,7 @@ export function createRunner(o) {
         engine.begin(cwd)
         const jobId = jobs.start({
           kind: 'bash',
-          label: 'codebuddy: ' + shortLabel(args.prompt),
+          label: backend + ': ' + shortLabel(args.prompt),
           owner: exec.agent,
           run() {
             const handle = subprocess.spawn({ argv: built.argv, cwd: cwd, stdio: stdio, graceMs: 5000 })
@@ -502,25 +548,25 @@ export function createRunner(o) {
             const done = handle.done.then(function (outcome) {
               disposeLive(); disposeGuard()
               const s = readStreams(handle)
-              const res = buildResult(parseCodebuddyJson(s.stdoutText), outcome, built.mode, s.stderrText, s.stdoutText)
+              const res = buildResult(parseCodebuddyJson(s.stdoutText), outcome, built.mode, s.stderrText, s.stdoutText, backend)
               if (bgKilled && !res.ok) {
                 res.status = 'HUNG_TIMEOUT'
                 res.stderr = (res.stderr ? res.stderr + ' ' : '') + '[killed by timeout guard after ' + built.timeoutSec + 's; if this was a long-running script (build/test) raise timeoutSec]'
               }
               engine.end(res, cwd)
-              return { status: res.ok ? 'completed' : 'failed', detail: 'codebuddy ' + res.status, output: JSON.stringify(res) }
+              return { status: res.ok ? 'completed' : 'failed', detail: backend + ' ' + res.status, output: JSON.stringify(res) }
             }).catch(function (err) {
               disposeLive(); disposeGuard()
-              engine.end({ ok: false, status: 'JOB_ERROR' }, cwd)
+              engine.end({ ok: false, status: 'JOB_ERROR', backend: backend }, cwd)
               return { status: 'failed', detail: String(err && err.message || err) }
             })
             return { cancel: function () { try { handle.terminate() } catch (e) {} }, done: done }
           }
         })
-        return { ok: true, background: true, jobId: String(jobId), mode: built.mode, note: 'codebuddy running in background; collect with job_output ' + String(jobId) + '. Background failures do NOT open the fallback dialog; on failure re-run in foreground to be prompted.' }
+        return { ok: true, background: true, jobId: String(jobId), mode: built.mode, backend: backend, note: backend + ' running in background; collect with job_output ' + String(jobId) + '. Background failures do NOT open the fallback dialog; on failure re-run in foreground to be prompted.' }
       } catch (e) {
         // jobs.start 失败必须 return，否则会静默落到下面的前台路径再跑一遍。
-        const res = { ok: false, status: 'JOB_START_ERROR', response: '', sessionId: null, durationSeconds: null, numTurns: null, totalTokens: null, exitCode: null, mode: built.mode, stderr: 'failed to start background job: ' + String(e && e.message || e) }
+        const res = { ok: false, status: 'JOB_START_ERROR', response: '', sessionId: null, durationSeconds: null, numTurns: null, totalTokens: null, exitCode: null, mode: built.mode, backend: backend, stderr: 'failed to start background job: ' + String(e && e.message || e) }
         engine.end(res, cwd)
         return res
       }
@@ -534,10 +580,10 @@ export function createRunner(o) {
         attempt += 1
         const r = await runSync(built.argv, cwd, built.timeoutSec, exec ? exec.signal : undefined)
         if (r.timedOut) {
-          res = { ok: false, status: 'HUNG_TIMEOUT', response: '', sessionId: null, durationSeconds: null, numTurns: null, totalTokens: null, exitCode: r.outcome ? r.outcome.exitCode : null, mode: built.mode, stderr: 'codebuddy did not finish within ' + built.timeoutSec + 's (DSH hard timeout). Last activity: ' + r.lastEventSummary + '. NOTE: if the task was a long-running script (build/test), raise timeoutSec; this was a hang guard, not necessarily a failure of codebuddy.' }
+          res = { ok: false, status: 'HUNG_TIMEOUT', response: '', sessionId: null, durationSeconds: null, numTurns: null, totalTokens: null, exitCode: r.outcome ? r.outcome.exitCode : null, mode: built.mode, backend: backend, stderr: backend + ' did not finish within ' + built.timeoutSec + 's (DSH hard timeout). Last activity: ' + r.lastEventSummary + '. NOTE: if the task was a long-running script (build/test), raise timeoutSec; this was a hang guard, not necessarily a failure of codebuddy.' }
           break
         }
-        res = buildResult(parseCodebuddyJson(r.stdoutText), r.outcome, built.mode, r.stderrText, r.stdoutText)
+        res = buildResult(parseCodebuddyJson(r.stdoutText), r.outcome, built.mode, r.stderrText, r.stdoutText, backend)
         if (res.ok || !isLimited(res)) break
         // 限流/网络类失败：每次失败弹一次三选一；「重试」仅在还有次数时提供。
         // （不再有循环外的第二次弹窗 —— 修复旧版「双弹窗 + 死选项」。）
@@ -549,7 +595,7 @@ export function createRunner(o) {
       engine.end(res, cwd)
       return res
     } catch (e) {
-      const res = { ok: false, status: 'SPAWN_ERROR', response: '', sessionId: null, durationSeconds: null, numTurns: null, totalTokens: null, exitCode: null, mode: built.mode, stderr: String(e && e.message || e) }
+      const res = { ok: false, status: 'SPAWN_ERROR', response: '', sessionId: null, durationSeconds: null, numTurns: null, totalTokens: null, exitCode: null, mode: built.mode, backend: backend, stderr: String(e && e.message || e) }
       const out = (await askFallback(exec, res, true) === 'fallback') ? fallbackResult(res, built.mode) : res
       engine.end(out, cwd)
       return out

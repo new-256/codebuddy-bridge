@@ -70,7 +70,7 @@ test('协议握手 + 工具列表', async () => {
   const { child, client, init } = await startServer({})
   try {
     assert.equal(init.result.serverInfo.name, 'codebuddy-mcp-server')
-    assert.equal(init.result.serverInfo.version, '1.0.0')
+    assert.equal(init.result.serverInfo.version, '1.1.0')
     const tools = await client.request('tools/list', {})
     assert.deepEqual(tools.result.tools.map((t) => t.name).sort(), ['codebuddy_continue', 'codebuddy_run', 'codebuddy_status'])
     const ping = await client.request('ping', {})
@@ -148,6 +148,42 @@ test('白名单护栏：CODEBUDDY_MCP_ALLOWED_ROOTS 外的 cwd 被拒绝', async
     // 白名单内放行
     const allowed = await client.request('tools/call', { name: 'codebuddy_run', arguments: { prompt: 'hi', cwd: FIXTURES_DIR } })
     assert.ok(allowed.result.content[0].text.includes('codebuddy OK'))
+  } finally {
+    client.close()
+  }
+})
+
+test('backend 参数：workbuddy 经 WORKBUDDY_BIN 夹具真跑 + 会话路由回所属后端', async () => {
+  // WORKBUDDY_BIN 指向伪夹具：server 的 commandFor('workbuddy') 应采用它，
+  // 结果 backend=workbuddy；随后不带 backend 的 continue 按 sessionId 路由回去。
+  const { child, client } = await startServer({ WORKBUDDY_BIN: FAKE_BIN, CODEBUDDY_MCP_CWD: FIXTURES_DIR })
+  try {
+    const run = await client.request('tools/call', { name: 'codebuddy_run', arguments: { prompt: 'hi', backend: 'workbuddy', cwd: FIXTURES_DIR } })
+    const text = run.result.content[0].text
+    assert.ok(text.startsWith('workbuddy OK [status=SUCCESS'), text.slice(0, 80))
+    assert.ok(text.includes('session=fake-s1'))
+    const cont = await client.request('tools/call', { name: 'codebuddy_continue', arguments: { prompt: 'again', sessionId: 'fake-s1' } })
+    const ctext = cont.result.content[0].text
+    assert.ok(ctext.startsWith('workbuddy OK'), '续接应自动路由回 workbuddy: ' + ctext.slice(0, 80))
+    const status = await client.request('tools/call', { name: 'codebuddy_status', arguments: {} })
+    const st = status.result.content[0].text
+    assert.ok(st.includes('[workbuddy]'), st)
+  } finally {
+    client.close()
+  }
+})
+
+test('workbuddy 后端不可用：明确报 WorkBuddy 未安装（而非裸 ENOENT）', async () => {
+  const { child, client } = await startServer({
+    WORKBUDDY_BIN: 'C:\\definitely\\missing\\workbuddy-cli',
+    CODEBUDDY_MCP_CWD: FIXTURES_DIR
+  })
+  try {
+    const run = await client.request('tools/call', { name: 'codebuddy_run', arguments: { prompt: 'hi', backend: 'workbuddy' } })
+    const text = run.result.content[0].text
+    assert.ok(text.includes('CODEBUDDY_UNAVAILABLE'), text)
+    assert.ok(text.includes('WorkBuddy'), text)
+    assert.ok(text.includes('WORKBUDDY_BIN'), text)
   } finally {
     client.close()
   }

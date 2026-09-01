@@ -27,10 +27,10 @@
 
 | 形态 | 位置 | 能力 | 是否随进程重启保留 | 状态灯 |
 | --- | --- | --- | --- | --- |
-| **持久 Agent Preset**（DSH 内推荐） | [`preset/codebuddy-first/`](preset/codebuddy-first/) | 工具 + 优先策略 + 回退弹窗 + `codebuddy_status` | ✅ 是（落盘为 preset） | ❌ 无（Host 面组合不含浏览器 UI） |
+| **持久 Agent Preset**（DSH 内推荐） | [`preset/codebuddy-first/`](preset/codebuddy-first/) | 工具 + 优先策略 + 回退弹窗 + `codebuddy_status` + 双后端（codebuddy/workbuddy） | ✅ 是（落盘为 preset） | ❌ 无（Host 面组合不含浏览器 UI） |
 | **家级状态灯插件**（随软件启动） | [`home-plugin/codebuddy-indicator/`](home-plugin/codebuddy-indicator/) | 状态灯（所有会话自动显示，无需审批） | ✅ 是（cordis.patch.yml 注册） | ✅ 有 |
-| **动态 Cordis 插件**（当前会话） | [`dynamic/`](dynamic/) | 工具 + 优先策略 + 回退弹窗 + **状态灯** + `codebuddy_status` | ❌ 否（进程内临时） | ✅ 有（需一次性审批） |
-| **MCP 服务器**（任何 MCP 宿主） | [`mcp/`](mcp/) | `codebuddy_run` / `codebuddy_continue` / `codebuddy_status` 通过 `tools/list` 被 Claude Code、Codex、Cherry Studio 等**自动发现**，由宿主代理自主决定是否调用 | ✅ 是（注册进客户端配置） | ❌ 无 |
+| **动态 Cordis 插件**（当前会话） | [`dynamic/`](dynamic/) | 工具 + 优先策略 + 回退弹窗 + **状态灯** + `codebuddy_status` + 双后端 | ❌ 否（进程内临时） | ✅ 有（需一次性审批） |
+| **MCP 服务器**（任何 MCP 宿主） | [`mcp/`](mcp/) | `codebuddy_run` / `codebuddy_continue` / `codebuddy_status` 通过 `tools/list` 被 Claude Code、Codex、Cherry Studio 等**自动发现**，由宿主代理自主决定是否调用；支持双后端 | ✅ 是（注册进客户端配置） | ❌ 无 |
 
 > **状态灯为什么需要家级插件？** Agent Preset 是 **Host 面** 组合（`agent.cordis.yml` 挂载 Host 插件），其中的 `.mjs` 只在 Node 侧运行，天然不含浏览器 UI；而实时状态灯是 **Client 面**（浏览器 Slot）组件。**家级插件**（`cordis.patch.yml` 注册，如 `home-plugin/codebuddy-indicator/`）同时提供 Host 半（收集各会话推送的 codebuddy 状态 + HTTP 路由）与 Client 半（浏览器轮询渲染），随 DSH 启动自动加载、所有会话自动显示、无需审批。动态插件形态（首次运行需 GUI 一次性审批）与家级形态的灯可并存：两种形态都把快照汇入家级收集器（动态形态经 `codebuddyCollector.mergeSnapshot`，preset 形态经 `ctx.emit('codebuddy/status')` 事件）。
 >
@@ -104,18 +104,20 @@ Codex / 通用 JSON 配置、环境变量与自检见 [`mcp/README.md`](mcp/READ
 
 - **DeepSeek Harness (DSH)**，且会话已挂载所需 Host 服务：`tools`、`subprocess`、`systemPrompt`、`timer`（可选 `jobs`、`planMode`、`sandboxPolicy`、`userQuestions`）。
 - 本机已安装 **`codebuddy` CLI**（CodeBuddy Code，`npm i -g @tencent-ai/codebuddy-code`；开发时验证版本 v2.143.0）。**不要求在 PATH 里**：桥接会依次尝试 `subprocess.resolveExecutable('codebuddy')` → `node + CODEBUDDY_BIN` → `node + %APPDATA%\npm\node_modules\@tencent-ai\codebuddy-code\bin\codebuddy`，npm 全局安装即可被找到。
+- **可选**：腾讯 **WorkBuddy 桌面版**（办公任务 `backend="workbuddy"` 派发用；CLI 随桌面版安装于 `C:\Program Files\WorkBuddy\resources\app.asar.unpacked\cli\bin\codebuddy`，可用 `WORKBUDDY_BIN` 覆盖）。未安装时该后端返回带安装指引的错误，codebuddy 默认后端不受影响。
 - 状态灯还需 DSH 的 Web GUI（Client 面）。
 
 ## 工具用法
 
-`codebuddy_run(prompt, mode?, model?, effort?, maxTurns?, cwd?, addDirs?, timeoutSec?, background?)`
+`codebuddy_run(prompt, mode?, model?, effort?, maxTurns?, cwd?, addDirs?, timeoutSec?, background?, backend?)`
 
+- `backend`：**双后端选择**（v1.1.0）。`codebuddy`（默认，CodeBuddy Code，编码场景）或 `workbuddy`（腾讯 WorkBuddy——CodeBuddy 的同引擎孪生产品，主打办公场景：文档/幻灯/表格、知识库、图片视频生成、微信/企微回复）。两者各自维护独立会话存储；`codebuddy_continue` 续接时按 sessionId **自动路由回所属后端**，显式传 `backend` 最优先。
 - `mode`：`auto`（默认，跟随 DSH plan 状态自动选 `plan`/`accept-edits`）、`plan`、`accept-edits`。
-- `model`：可选，指定 codebuddy 模型（如 `hy4-preview`（默认）、`hy3`、`glm-5.3`、`kimi-k3-1`、`deepseek-v4-pro` 等，完整清单见工具描述）；不传用 codebuddy 配置的默认模型。`effort`：`minimal / low / medium / high / xhigh / max`；`maxTurns`（1-500，默认不限）可选。
+- `model`：可选，指定模型（如 `hy4-preview`（默认）、`hy3`、`glm-5.3`、`kimi-k3-1`、`deepseek-v4-pro` 等，完整清单见工具描述）；不传用 CLI 配置的默认模型。`effort`：`minimal / low / medium / high / xhigh / max`；`maxTurns`（1-500，默认不限）可选。
 - `background: true`：作为后台任务运行，立即返回 `jobId`，用 `job_output` 收结果；后台路径同样有 `timeoutSec+60s` 挂起守卫。
-- 返回：`{ ok, status, response, sessionId, durationSeconds, numTurns, totalTokens, exitCode, mode, stderr }`；回退时为 `{ ok:false, fallback:true, status:'FALLBACK_TO_DSH', ... }`。
+- 返回：`{ ok, status, response, sessionId, durationSeconds, numTurns, totalTokens, exitCode, mode, backend, stderr }`；回退时为 `{ ok:false, fallback:true, status:'FALLBACK_TO_DSH', ... }`。
 
-`codebuddy_continue(prompt, sessionId? | latest?, ...)` —— 复用某个 codebuddy 会话上下文继续对话（`--resume <sessionId>` / `--continue`），其余参数同上。
+`codebuddy_continue(prompt, sessionId? | latest?, ...)` —— 复用某个会话上下文继续对话（`--resume <sessionId>` / `--continue`），其余参数同上；不带 `backend` 时按 sessionId 自动路由到该会话所属的 CLI。
 
 `codebuddy_status(cwd?)` —— **实时观察 + 用量统计**：返回各项目 codebuddy 此刻在干什么（`{ state, running, current, trail, lastStatus, lastSessionId, runs, totalTokens, updatedAt, projects[] }`）。`projects[]` 按项目（工作目录）分节：`current` 为该项目当前正在执行的步骤（工具名 + 参数，或 thinking/typing 思考/打字中），`trail` 为最近步骤轨迹，`runs`/`totalTokens` 为**按项目累计的调用次数与 token 用量**（codebuddy 无套餐额度 API，以 token 计量作替代观察）。可选 `cwd` 只查某个项目。`codebuddy_run`/`codebuddy_continue` 运行期间即可调用，无需等待结束。
 
@@ -140,7 +142,7 @@ codebuddy-first-bridge/
 ├─ README.en.md
 ├─ LICENSE
 ├─ .gitignore
-├─ package.json                 # 版本元数据（v1.0.0，Node ≥18）+ scripts（build/test/check）
+├─ package.json                 # 版本元数据（v1.1.0，Node ≥18）+ scripts（build/test/check）
 ├─ MCP-POLICY.md / MCP-POLICY.zh.md   # 外部代理「披露并优先」策略（安装到 ~/.claude/CLAUDE.md 与 ~/.codex/AGENTS.md）
 ├─ .github/workflows/ci.yml     # node --check + 测试套件 + 版本/YAML 结构校验（Node 18/20/22）
 ├─ assets/indicator-states.svg
@@ -189,6 +191,7 @@ codebuddy-first-bridge/
 
 | 版本 | 内容 |
 | --- | --- |
+| [v1.1.0](https://github.com/new-256/codebuddy-bridge/releases/tag/v1.1.0) | **双后端：WorkBuddy 接入**。`backend="workbuddy"` 把办公任务（文档/幻灯/表格、知识库、图片视频生成、微信/企微回复）派发给腾讯 WorkBuddy——CodeBuddy 的**同引擎孪生 CLI**（同一 stream-json 协议，实测逐字段兼容），登录态随桌面应用共享。**会话感知后端路由**：两 CLI 各自维护会话存储，续接时按 sessionId 自动路由回所属 CLI；结果带 `backend` 字段、状态带 `[workbuddy]` 标记；MCP 未装 WorkBuddy 时返回带安装指引的错误。测试套件扩至 49 例 |
 | [v1.0.0](https://github.com/new-256/codebuddy-bridge/releases/tag/v1.0.0) | **首个正式版本**：`codebuddy_run` / `codebuddy_continue` / `codebuddy_status` 三工具 + codebuddy 优先策略 + 受限回退弹窗 + 家级实时状态灯 + 动态形态 + 零依赖 MCP 服务器（含 `CODEBUDDY_MCP_ALLOWED_ROOTS` 白名单护栏）+ 按项目 token 用量统计（codebuddy 无套餐额度 API，以 token 计量替代）+ 指定 `model`/`effort`/`maxTurns`；`core/` 共享核心（单一事实来源 + 生成派生产物 + 同步锁定）；可靠性基线（全失败路径可用、会话感知 cwd 回落、单次弹窗、后台挂起守卫、限流判定收窄、跨 chunk 半行安全解析）由 44 例故障注入回归测试锁定，CI 语法矩阵 + 测试 + 版本三处锁死 |
 
 详见 [docs/CHANGELOG.md](docs/CHANGELOG.md)。

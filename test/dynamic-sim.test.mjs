@@ -177,6 +177,37 @@ test('半行实时解析：跨 chunk 的 JSON 行不再丢失', async () => {
   }
 })
 
+test('backend 派发：workbuddy 走 WorkBuddy CLI 路径 + 会话自动路由回所属后端', async () => {
+  const projA = 'C:\\projWB'
+  let nth = 0
+  const { sub, mergedCtx, mockHarness } = freshHarness(() => {
+    nth += 1
+    return { stdout: successStream({ session_id: nth === 1 ? 'wb-1' : 'cb-1' }), exitCode: 0 }
+  })
+  mergedCtx.ctx.subprocess = sub.subprocess
+  const plugin = loadGeneratedPlugin()(mockHarness.harness)
+  plugin.apply(mergedCtx.ctx)
+  const run = mockHarness.tools.find((t) => t.name === 'codebuddy_run')
+  // 第一次：显式 backend=workbuddy
+  const res1 = await run.execute({ prompt: 'x', backend: 'workbuddy', cwd: projA }, { agent: 'a1' })
+  assert.equal(res1.ok, true)
+  assert.equal(res1.backend, 'workbuddy')
+  assert.equal(sub.spawns[0].argv[1], 'C:\\Program Files\\WorkBuddy\\resources\\app.asar.unpacked\\cli\\bin\\codebuddy')
+  // 第二次：默认 codebuddy（同项目）
+  const res2 = await run.execute({ prompt: 'y', cwd: projA }, { agent: 'a1' })
+  assert.equal(res2.backend, 'codebuddy')
+  assert.notEqual(sub.spawns[1].argv[1], 'C:\\Program Files\\WorkBuddy\\resources\\app.asar.unpacked\\cli\\bin\\codebuddy')
+  // 续接 wb-1（不显式给 backend）→ 必须路由回 workbuddy（而不是项目最近的 codebuddy）
+  const cont = mockHarness.tools.find((t) => t.name === 'codebuddy_continue')
+  const res3 = await cont.execute({ prompt: 'z', sessionId: 'wb-1' }, { agent: 'a1' })
+  assert.equal(res3.backend, 'workbuddy')
+  assert.equal(sub.spawns[2].argv[1], 'C:\\Program Files\\WorkBuddy\\resources\\app.asar.unpacked\\cli\\bin\\codebuddy')
+  // 状态：最后一次运行是续接（路由回 workbuddy）→ 项目 lastBackend=workbuddy
+  const snap = mockHarness.tools.find((t) => t.name === 'codebuddy_status').execute({})
+  assert.equal(snap.projects[0].lastBackend, 'workbuddy')
+  assert.equal(snap.runs, 3)
+})
+
 test('后台派发：返回 jobId，任务在后台跑完并计入状态', async () => {
   let started = null
   const jobs = {

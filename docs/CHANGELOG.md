@@ -2,6 +2,26 @@
 
 本项目遵循 [语义化版本](https://semver.org/)；版本号同步 `package.json`、Git tag 与 GitHub Release（`npm run check` 中的 `scripts/verify.mjs` 在 CI 里锁三处一致）。
 
+## [1.1.0] - 2026-09-02
+
+双后端：`backend="workbuddy"` 把任务派发给 **腾讯 WorkBuddy**（CodeBuddy 的同引擎「孪生兄弟」，主打办公场景）。
+
+### 背景
+
+WorkBuddy 桌面版（`C:\Program Files\WorkBuddy`）内置与 codebuddy-code **同一引擎、同一 CLI、同一 stream-json 协议**的命令行（`resources\app.asar.unpacked\cli\bin\codebuddy`，`@genie/agent-cli`），差异只在产品面：办公工具集（腾讯文档/PPT/表格、知识库、图片视频生成、微信/企微回复），登录态与桌面应用共享。实测 `node <wb-bin> -p ... --output-format stream-json --permission-mode bypassPermissions` 输出事件逐字段兼容。
+
+### 新增
+
+- **`backend` 参数**（`codebuddy_run` / `codebuddy_continue`，三形态齐备）：`'codebuddy'`（默认，编码场景）或 `'workbuddy'`（办公场景）。preset/dynamic 经 `WORKBUDDY_BIN` 环境变量（preset）或内置路径（dynamic 沙箱无 env）解析 WorkBuddy CLI；MCP 经 `WORKBUDDY_BIN`（未装 WorkBuddy 时返回带安装指引的 `CODEBUDDY_UNAVAILABLE`，而非裸 ENOENT）。
+- **会话感知后端路由**：codebuddy 与 workbuddy 各自维护独立会话存储（`~/.codebuddy` 与 `~/.workbuddy`），同一 sessionId 只在其中一个后端有效。引擎以 `sessions[sessionId] = {cwd, backend}` 表一次解析出续接所需的工作目录与后端：`codebuddy_continue` 不带 backend 时按 sessionId 自动路由回所属 CLI；显式 `backend` 参数始终最优先。cwd 解析按会话查表而非项目级 `lastSessionId`（后者只记最后一个会话，同项目混跑多会话时会 miss）。
+- **状态呈现**：结果对象新增 `backend` 字段（渲染头部 `workbuddy OK [...]`）；`codebuddy_status` 项目行带 `[workbuddy]` 标记；回退弹窗文案按后端命名。
+- **策略段更新**：office 任务（文档/幻灯/表格、知识库、图片视频生成、微信企微回复）优先 `backend="workbuddy"` 派发。
+
+### 验证
+
+- `npm test`：49/49 通过（新增 resolveTarget 后端路由、buildResult/fallbackResult/renderResult backend 贯通、dynamic 沙箱 backend 派发 + 自动路由、MCP workbuddy 夹具真跑 + 未装 WorkBuddy 报错文案）。
+- 真实端到端（MCP + 真实 WorkBuddy CLI）：`backend="workbuddy"` 真跑 SUCCESS + 同会话续接自动路由回 workbuddy；codebuddy 默认路径回归通过。
+
 ## [1.0.0] - 2026-09-02
 
 首个正式版本：**codebuddy 优先派发 + DSH 全程掌控 + 受限回退**的完整闭环，外部代码评审驱动的可靠性基线、共享核心架构与测试套件。自 [agy-first-bridge](https://github.com/new-256/agy-first-bridge) v1.5.11 移植并完成 codebuddy 适配（`--permission-mode bypassPermissions`、`--resume`/`--continue` 续接、Claude Code 风格 stream-json 事件解析、effort 扩为 minimal/max 两端、新增 `maxTurns`、node+bin 可执行解析回退；codebuddy 无套餐额度 API，移除 agy 的 quota 体系，以 token 计量作替代观察）。

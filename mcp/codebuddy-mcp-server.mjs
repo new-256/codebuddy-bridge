@@ -37,23 +37,41 @@ import {
 } from '../core/codebuddy-core.mjs'
 
 const NAME = 'codebuddy-mcp-server'
-const VERSION = '1.0.0'
+const VERSION = '1.1.0'
 const PROTOCOL = '2024-11-05'
 
 // Default cwd for codebuddy calls that do not pass one (override: CODEBUDDY_MCP_CWD).
 const CWD_FALLBACK = process.env.CODEBUDDY_MCP_CWD || 'C:\\Users\\lcl\\Desktop\\codebuddy-bridge'
 
-// ── codebuddy command resolution ─────────────────────────────────────────────
-// Prefer node + the npm bin script (codebuddy is normally NOT on PATH, and its
+// ── CLI command resolution ────────────────────────────────────────────────────
+// Two backends share the same engine and stream-json protocol:
+//   codebuddy (default) — Tencent CodeBuddy Code, coding scenarios.
+//   workbuddy           — Tencent WorkBuddy, the office-scenario sibling shipped
+//                         inside the WorkBuddy desktop app (same CLI, office
+//                         product face: docs/slides, knowledge base, media gen,
+//                         WeChat/WeCom replies).
+// Prefer node + the bin script (codebuddy is normally NOT on PATH, and its
 // .cmd shim cannot be spawned by Node without a shell — CVE-2024-27980); fall
 // back to a bare `codebuddy` for PATH/native installs.
-function codebuddyCommand() {
+function commandFor(backend) {
   const nodeExe = process.execPath || 'node'
+  if (backend === 'workbuddy') {
+    const wbBin = process.env.WORKBUDDY_BIN || 'C:\\Program Files\\WorkBuddy\\resources\\app.asar.unpacked\\cli\\bin\\codebuddy'
+    return [nodeExe, wbBin]
+  }
   const envBin = process.env.CODEBUDDY_BIN
   if (envBin && existsSync(envBin)) return [nodeExe, envBin]
   const npmBin = (process.env.APPDATA || 'C:\\Users\\lcl\\AppData\\Roaming') + '\\npm\\node_modules\\@tencent-ai\\codebuddy-code\\bin\\codebuddy'
   if (existsSync(npmBin)) return [nodeExe, npmBin]
   return ['codebuddy']
+}
+
+// workbuddy 后端不可用时的明确错误信息（spawn ENOENT 之外的前置检查）。
+function backendUnavailable(backend, prefix) {
+  if (backend === 'workbuddy' && !existsSync(prefix[1] || '')) {
+    return 'WorkBuddy CLI not found at "' + (prefix[1] || '') + '" — install the WorkBuddy desktop app (the CLI ships with it at <install>\\resources\\app.asar.unpacked\\cli\\bin\\codebuddy) or set WORKBUDDY_BIN.'
+  }
+  return null
 }
 
 // ── cwd whitelist guard ──────────────────────────────────────────────────────
@@ -83,17 +101,27 @@ const engine = createStatusEngine(null)
 // ── run orchestration ────────────────────────────────────────────────────────
 function runCodebuddy(args) {
   return new Promise((resolve) => {
-    const prefix = codebuddyCommand()
+    // 后端路由：显式 args.backend 优先；否则按会话归属（codebuddy/workbuddy
+    // 各自维护独立会话存储 ~/.codebuddy 与 ~/.workbuddy），默认 codebuddy。
+    // cwd 与 backend 一次解析（会话感知回落）。
+    const target = engine.resolveTarget(args, CWD_FALLBACK)
+    const backend = (args && (args.backend === 'workbuddy' || args.backend === 'codebuddy')) ? args.backend : (target.backend || 'codebuddy')
+    const prefix = commandFor(backend)
     const built = buildArgv(prefix, args, { defaultMode: 'accept-edits' })
     const { argv, timeoutSec } = built
-    // codebuddy 会话按项目目录（cwd）归档：续接（--resume/--continue）未显式给
-    // cwd 时，优先回落到该 session 所在项目的 cwd，否则换个目录会
+    // codebuddy/workbuddy 会话按项目目录（cwd）归档：续接（--resume/--continue）
+    // 未显式给 cwd 时，优先回落到该 session 所在项目的 cwd，否则换个目录会
     // "No conversation found with session ID"。
-    let cwd = resolvePath(engine.resolveCwd(args, CWD_FALLBACK))
+    let cwd = resolvePath(target.cwd)
     // 安全护栏（见文件头 Security 注释）。
     const blocked = cwdBlockedReason(cwd)
     if (blocked) {
-      resolve({ ok: false, status: 'CWD_BLOCKED', response: '', sessionId: null, durationSeconds: null, numTurns: null, totalTokens: null, exitCode: null, mode: built.mode, stderr: blocked })
+      resolve({ ok: false, status: 'CWD_BLOCKED', response: '', sessionId: null, durationSeconds: null, numTurns: null, totalTokens: null, exitCode: null, mode: built.mode, backend: backend, stderr: blocked })
+      return
+    }
+    const unavailable = backendUnavailable(backend, prefix)
+    if (unavailable) {
+      resolve({ ok: false, status: 'CODEBUDDY_UNAVAILABLE', response: '', sessionId: null, durationSeconds: null, numTurns: null, totalTokens: null, exitCode: null, mode: built.mode, backend: backend, stderr: unavailable })
       return
     }
     let child
@@ -106,7 +134,7 @@ function runCodebuddy(args) {
         windowsHide: true
       })
     } catch (e) {
-      resolve({ ok: false, status: 'SPAWN_ERROR', response: '', sessionId: null, durationSeconds: null, numTurns: null, totalTokens: null, exitCode: null, mode: built.mode, stderr: String(e && e.message || e) })
+      resolve({ ok: false, status: 'SPAWN_ERROR', response: '', sessionId: null, durationSeconds: null, numTurns: null, totalTokens: null, exitCode: null, mode: built.mode, backend: backend, stderr: String(e && e.message || e) })
       return
     }
     engine.begin(cwd)
@@ -136,8 +164,9 @@ function runCodebuddy(args) {
       settled = true
       clearTimeout(timer)
       stream.flush()
-      engine.end({ ok: false, status: 'CODEBUDDY_UNAVAILABLE', stderr: 'codebuddy spawn failed: ' + String(e && e.message || e) + ' — install CodeBuddy Code (npm i -g @tencent-ai/codebuddy-code) or set CODEBUDDY_BIN' }, cwd)
-      resolve({ ok: false, status: 'CODEBUDDY_UNAVAILABLE', response: '', sessionId: null, durationSeconds: null, numTurns: null, totalTokens: null, exitCode: null, mode: built.mode, stderr: 'codebuddy spawn failed: ' + String(e && e.message || e) + ' — install CodeBuddy Code (npm i -g @tencent-ai/codebuddy-code) or set CODEBUDDY_BIN' })
+      const msg = backend + ' spawn failed: ' + String(e && e.message || e) + (backend === 'workbuddy' ? ' — the WorkBuddy desktop app must be installed (or set WORKBUDDY_BIN)' : ' — install CodeBuddy Code (npm i -g @tencent-ai/codebuddy-code) or set CODEBUDDY_BIN')
+      engine.end({ ok: false, status: 'CODEBUDDY_UNAVAILABLE', backend: backend, stderr: msg }, cwd)
+      resolve({ ok: false, status: 'CODEBUDDY_UNAVAILABLE', response: '', sessionId: null, durationSeconds: null, numTurns: null, totalTokens: null, exitCode: null, mode: built.mode, backend: backend, stderr: msg })
     })
     child.on('close', (code) => {
       if (settled) return
@@ -146,7 +175,7 @@ function runCodebuddy(args) {
       stream.flush()
       const outcome = { exitCode: killed ? 124 : code }
       const parsed = parseCodebuddyJson(out)
-      let res = buildResult(parsed, outcome, built.mode, err, out)
+      let res = buildResult(parsed, outcome, built.mode, err, out, backend)
       if (killed && !res.ok) {
         res.status = 'HUNG_TIMEOUT'
         res.stderr = (res.stderr ? res.stderr + ' ' : '') + '[killed by timeout guard after ' + timeoutSec + 's; if this was a long-running script (build/test) raise timeoutSec]'
@@ -159,13 +188,14 @@ function runCodebuddy(args) {
 
 // ── text rendering (MCP has no fallback dialog: no human answerer) ───────────
 function textResult(res) {
+  const bk = res.backend || 'codebuddy'
   const limited = !res.ok && isLimited(res)
-  const head = 'codebuddy ' + (res.ok ? 'OK' : 'FAILED') + ' [status=' + res.status + ' mode=' + res.mode +
+  const head = bk + ' ' + (res.ok ? 'OK' : 'FAILED') + ' [status=' + res.status + ' mode=' + res.mode +
     (res.sessionId ? ' session=' + res.sessionId : '') +
     (res.totalTokens != null ? ' tokens=' + res.totalTokens : '') +
     (res.durationSeconds != null ? ' ' + res.durationSeconds + 's' : '') + ']'
   let note = ''
-  if (limited) note = '\n\n[Note: this looks like a rate-limit / network failure. Do NOT retry codebuddy in a loop; finish the task with your own tools, or ask the user.]'
+  if (limited) note = '\n\n[Note: this looks like a rate-limit / network failure. Do NOT retry ' + bk + ' in a loop; finish the task with your own tools, or ask the user.]'
   let body = res.response || (res.stderr ? '[stderr] ' + res.stderr : '')
   // 观测性：无 result 事件时附带原始 stdout 尾部（诊断挂起/解析失败用）。
   if (!res.ok && res.rawStdout) body = (body ? body + '\n\n' : '') + '[raw stdout tail] ' + res.rawStdout
@@ -188,7 +218,8 @@ function statusText(filterCwd) {
     for (const p of projects) {
       const cur = p.current ? (' step ' + p.current.stepIndex + ' → ' + p.current.tool + (p.current.args ? ' ' + JSON.stringify(p.current.args) : '')) : (p.running > 0 ? ' (starting / thinking)' : '')
       const usage = (p.runs ? ' | Σ ' + p.runs + ' runs · ' + (p.totalTokens || 0) + ' tokens' : '')
-      lines.push('· ' + p.name + ' [' + p.state + (p.running > 0 ? ' ×' + p.running : '') + ']' + cur + (p.lastStatus ? ' | last=' + p.lastStatus + (p.lastSessionId ? ' ' + p.lastSessionId.slice(0, 8) : '') : '') + usage)
+      const bkTag = (p.lastBackend && p.lastBackend !== 'codebuddy') ? ' [' + p.lastBackend + ']' : ''
+      lines.push('· ' + p.name + ' [' + p.state + (p.running > 0 ? ' ×' + p.running : '') + ']' + bkTag + cur + (p.lastStatus ? ' | last=' + p.lastStatus + (p.lastSessionId ? ' ' + p.lastSessionId.slice(0, 8) : '') : '') + usage)
       if (p.trail && p.trail.length) {
         lines.push('    steps:')
         for (const e of p.trail.slice(-3)) {
@@ -221,11 +252,12 @@ function statusText(filterCwd) {
 const TOOLS = [
   {
     name: 'codebuddy_run',
-    description: 'Dispatch a coding/build/debug/investigation task to the local codebuddy agent CLI (Tencent CodeBuddy Code) and return its final answer. codebuddy runs fully non-interactively with permissions auto-approved (--permission-mode bypassPermissions, never prompts) and applies edits directly. Prefer it for implementation, multi-file edits, refactors and debugging; use your own tools for quick read-only lookups and final build/test verification. mode=plan runs codebuddy read-only. Optional model/effort/maxTurns select the codebuddy model and caps; timeoutSec (10-3600, default 300) is a server-side hang guard. While it runs, call codebuddy_status to watch what codebuddy is doing live.',
+    description: 'Dispatch a coding/build/debug/investigation task to the local codebuddy agent CLI (Tencent CodeBuddy Code) and return its final answer. codebuddy runs fully non-interactively with permissions auto-approved (--permission-mode bypassPermissions, never prompts) and applies edits directly. Prefer it for implementation, multi-file edits, refactors and debugging; use your own tools for quick read-only lookups and final build/test verification. mode=plan runs codebuddy read-only. Optional model/effort/maxTurns select the codebuddy model and caps; timeoutSec (10-3600, default 300) is a server-side hang guard. While it runs, call codebuddy_status to watch what codebuddy is doing live. backend="workbuddy" (Tencent WorkBuddy, same engine, office-scenario product face) routes office tasks: documents/slides/spreadsheets, knowledge-base lookups, image/video generation, WeChat/WeCom replies.',
     inputSchema: {
       type: 'object',
       properties: {
         prompt: { type: 'string', description: 'The full task/instruction for codebuddy. Be complete and self-contained.' },
+        backend: { type: 'string', enum: ['codebuddy', 'workbuddy'], description: 'codebuddy (default) for coding work; workbuddy for office tasks (docs/slides, knowledge base, media generation, WeChat/WeCom replies). Continuing a session routes back to its owning backend automatically.' },
         mode: { type: 'string', enum: ['plan', 'accept-edits'], description: 'plan = no writes; accept-edits = allow edits (default).' },
         model: { type: 'string', description: 'Optional codebuddy model id (hy4-preview, hy3, hy3-x, glm-5.3, glm-5.3-flash, glm-5.2, glm-5.1, glm-5v-turbo, minimax-m3, minimax-m2.7, kimi-k3-1, kimi-k2.7, kimi-k2.6, deepseek-v4-pro, deepseek-v4-flash). Unset = codebuddy configured default.' },
         effort: { type: 'string', enum: ['minimal', 'low', 'medium', 'high', 'xhigh', 'max'], description: 'Optional reasoning effort.' },
@@ -246,6 +278,7 @@ const TOOLS = [
         prompt: { type: 'string', description: 'Follow-up instruction for the ongoing codebuddy conversation.' },
         sessionId: { type: 'string', description: 'codebuddy session id to resume (from a prior codebuddy_run result).' },
         latest: { type: 'boolean', description: 'Continue the most recent codebuddy conversation.' },
+        backend: { type: 'string', enum: ['codebuddy', 'workbuddy'], description: 'Which CLI to resume on; defaults to the backend owning the sessionId.' },
         mode: { type: 'string', enum: ['plan', 'accept-edits'], description: 'plan = no writes; accept-edits = allow edits (default).' },
         model: { type: 'string', description: 'Optional codebuddy model id.' },
         effort: { type: 'string', enum: ['minimal', 'low', 'medium', 'high', 'xhigh', 'max'] },

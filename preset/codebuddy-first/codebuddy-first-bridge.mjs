@@ -39,8 +39,17 @@ export function apply(ctx) {
     return false
   }
 
-  // preset 形态运行在 DSH host 进程内：可用 process.env（CODEBUDDY_BIN 覆盖）。
-  async function resolveCodebuddyExe(execSignal) {
+  // preset 形态运行在 DSH host 进程内：可用 process.env。
+  // backend='codebuddy'：PATH → CODEBUDDY_BIN → npm 全局 bin（.cmd shim 走
+  //   node+bin，规避 CVE-2024-27980 后 spawn .cmd/.bat 的 EINVAL）。
+  // backend='workbuddy'：WORKBUDDY_BIN → WorkBuddy 桌面版自带 CLI（与 codebuddy
+  //   同引擎同协议，办公场景产品面：文档/PPT/知识库/图片视频生成/微信企微回复）。
+  async function resolveExe(backend, execSignal) {
+    if (backend === 'workbuddy') {
+      const nodeExe = process.execPath || 'node'
+      const wbBin = process.env.WORKBUDDY_BIN || 'C:\\Program Files\\WorkBuddy\\resources\\app.asar.unpacked\\cli\\bin\\codebuddy'
+      return [nodeExe, wbBin]
+    }
     try {
       const exe = await subprocess.resolveExecutable('codebuddy', undefined, execSignal)
       // npm 安装的 codebuddy 只有 .cmd shim，Node 直接 spawn .cmd/.bat 会 EINVAL
@@ -57,7 +66,7 @@ export function apply(ctx) {
     ctx: ctx,
     subprocess: subprocess,
     engine: engine,
-    resolveCodebuddyExe: resolveCodebuddyExe,
+    resolveExe: resolveExe,
     getCwdFallback: function () {
       return (sandboxPolicy && typeof sandboxPolicy.workspaceRoot === 'string' && sandboxPolicy.workspaceRoot) || CWD_FALLBACK
     },
@@ -81,6 +90,7 @@ export function apply(ctx) {
       required: ['prompt'],
       properties: {
         prompt: { type: 'string', description: 'The full task/instruction for codebuddy. Be complete and self-contained.' },
+        backend: { type: 'string', enum: ['codebuddy', 'workbuddy'], description: 'Which local CLI to dispatch to. codebuddy (default, CodeBuddy Code) for coding work; workbuddy (Tencent WorkBuddy, same engine, office-scenario product face) for office tasks: documents/slides/spreadsheets, knowledge-base lookups, image/video generation, WeChat/WeCom replies. Continuing a session routes back to its owning backend automatically.' },
         mode: { type: 'string', enum: ['auto', 'plan', 'accept-edits'], description: 'auto follows DSH plan state; plan = no writes; accept-edits = allow edits. Default auto.' },
         model: { type: 'string', description: 'Optional codebuddy model id. When unspecified, codebuddy uses its configured default model (currently hy4-preview). Supported models: hy4-preview, hy3, hy3-x, glm-5.3, glm-5.3-flash, glm-5.2, glm-5.1, glm-5v-turbo, minimax-m3, minimax-m2.7, kimi-k3-1, kimi-k2.7, kimi-k2.6, deepseek-v4-pro, deepseek-v4-flash. Pass a model only when the task clearly benefits from a specific one.' },
         effort: { type: 'string', enum: ['minimal', 'low', 'medium', 'high', 'xhigh', 'max'], description: 'Optional reasoning effort.' },
@@ -106,6 +116,7 @@ export function apply(ctx) {
         prompt: { type: 'string', description: 'Follow-up instruction for the ongoing codebuddy conversation.' },
         sessionId: { type: 'string', description: 'codebuddy session id to resume (from a prior codebuddy_run result).' },
         latest: { type: 'boolean', description: 'Continue the most recent codebuddy conversation instead of a specific id.' },
+        backend: { type: 'string', enum: ['codebuddy', 'workbuddy'], description: 'Which CLI to resume on. When omitted, the backend that owns the sessionId is used automatically.' },
         mode: { type: 'string', enum: ['auto', 'plan', 'accept-edits'], description: 'Execution mode; default auto.' },
         model: { type: 'string', description: 'Optional codebuddy model id.' },
         effort: { type: 'string', enum: ['minimal', 'low', 'medium', 'high', 'xhigh', 'max'], description: 'Optional reasoning effort.' },
@@ -118,7 +129,7 @@ export function apply(ctx) {
     output: { schema: OUTPUT_SCHEMA, render: renderResult },
     execute(args, exec) {
       const a = args || {}
-      const mapped = { prompt: a.prompt, mode: a.mode, model: a.model, effort: a.effort, maxTurns: a.maxTurns, cwd: a.cwd, timeoutSec: a.timeoutSec, background: a.background }
+      const mapped = { prompt: a.prompt, backend: a.backend, mode: a.mode, model: a.model, effort: a.effort, maxTurns: a.maxTurns, cwd: a.cwd, timeoutSec: a.timeoutSec, background: a.background }
       if (a.sessionId) mapped.sessionId = a.sessionId
       else if (a.latest) mapped.continueLatest = true
       return coreExecute(mapped, exec)
@@ -137,7 +148,7 @@ export function apply(ctx) {
         const key = String(a.cwd)
         snap.projects = snap.projects.filter((p) => p.cwd === key)
         const g = snap.projects[0]
-        if (g) { snap.state = g.state; snap.running = g.running; snap.current = g.current; snap.trail = g.trail; snap.lastStatus = g.lastStatus; snap.lastAt = g.lastAt; snap.lastSessionId = g.lastSessionId; snap.fallbackActive = g.fallbackActive; snap.runs = g.runs; snap.totalTokens = g.totalTokens; snap.updatedAt = g.updatedAt }
+        if (g) { snap.state = g.state; snap.running = g.running; snap.current = g.current; snap.trail = g.trail; snap.lastStatus = g.lastStatus; snap.lastAt = g.lastAt; snap.lastSessionId = g.lastSessionId; snap.lastBackend = g.lastBackend; snap.fallbackActive = g.fallbackActive; snap.runs = g.runs; snap.totalTokens = g.totalTokens; snap.updatedAt = g.updatedAt }
       }
       return snap
     }

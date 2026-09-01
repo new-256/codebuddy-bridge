@@ -254,6 +254,48 @@ test('engine: resolveCwd 会话感知回落', () => {
   assert.equal(eng.resolveCwd({}, '/fallback'), '/fallback')
 })
 
+test('engine: resolveTarget 后端路由—— 同项目混用两个后端时按会话归属路由', () => {
+  const eng = createStatusEngine(null)
+  // 同一个项目先跑 codebuddy 再跑 workbuddy（项目级 lastBackend 会是 workbuddy）
+  eng.end({ ok: true, status: 'SUCCESS', sessionId: 'cb-s1', backend: 'codebuddy' }, '/proj/A')
+  eng.end({ ok: true, status: 'SUCCESS', sessionId: 'wb-s1', backend: 'workbuddy' }, '/proj/A')
+  eng.projects['/proj/A'].updatedAt = Date.now() + 1000
+  // 显式 backend 不由 resolveTarget 处理（runner 层职责），此处返回会话推导值
+  assert.deepEqual(eng.resolveTarget({ backend: 'workbuddy' }, '/fb'), { cwd: '/fb', backend: null })
+  // cb-s1 是 codebuddy 会话 → 即使项目 lastBackend 已是 workbuddy，也路由回 codebuddy
+  assert.deepEqual(eng.resolveTarget({ sessionId: 'cb-s1' }, '/fb'), { cwd: '/proj/A', backend: 'codebuddy' })
+  // wb-s1 → workbuddy
+  assert.deepEqual(eng.resolveTarget({ sessionId: 'wb-s1' }, '/fb'), { cwd: '/proj/A', backend: 'workbuddy' })
+  // continueLatest → 最近项目 + 其后端（workbuddy）
+  assert.deepEqual(eng.resolveTarget({ continueLatest: true }, '/fb'), { cwd: '/proj/A', backend: 'workbuddy' })
+  // 未知会话 / 无语义 → backend null（调用方取默认）
+  assert.deepEqual(eng.resolveTarget({ sessionId: 'nope' }, '/fb'), { cwd: '/fb', backend: null })
+  assert.deepEqual(eng.resolveTarget({}, '/fb'), { cwd: '/fb', backend: null })
+  // 快照含 lastBackend
+  const snap = eng.statusSnapshot()
+  assert.equal(snap.projects[0].lastBackend, 'workbuddy')
+  assert.equal(snap.lastBackend, 'workbuddy')
+})
+
+test('buildResult/fallbackResult/renderResult：backend 贯通', () => {
+  const parsed = { type: 'result', subtype: 'success', is_error: false, result: 'ok', session_id: 'wb-9', duration_ms: 1000, num_turns: 1, usage: { input_tokens: 3, output_tokens: 4 } }
+  const r = buildResult(parsed, { exitCode: 0 }, 'bypassPermissions', '', '', 'workbuddy')
+  assert.equal(r.backend, 'workbuddy')
+  assert.equal(r.totalTokens, 7)
+  const r2 = buildResult(null, { exitCode: 1 }, 'bypassPermissions', 'x', 'y')
+  assert.equal(r2.backend, 'codebuddy')
+  const fb = fallbackResult({ status: 'ERROR', backend: 'workbuddy' }, 'bypassPermissions')
+  assert.equal(fb.backend, 'workbuddy')
+  // 渲染头部用 backend 名
+  const out = renderResult(r)
+  assert.ok(out[0].text.startsWith('workbuddy OK [status=SUCCESS'), out[0].text)
+  const out2 = renderResult({ ok: true, status: 'SUCCESS', mode: 'plan', response: 'x' })
+  assert.ok(out2[0].text.startsWith('codebuddy OK '), out2[0].text)
+  // 状态渲染的 workbuddy 标记
+  const st = renderStatus({ state: 'ok', running: 0, projects: [{ cwd: '/p/a', name: 'a', state: 'ok', running: 0, current: null, trail: [], lastStatus: 'SUCCESS', lastAt: 1, lastSessionId: 's1', lastBackend: 'workbuddy', runs: 1, totalTokens: 7, updatedAt: 1 }], runs: 1, totalTokens: 7 })
+  assert.ok(st[0].text.includes('[workbuddy]'), st[0].text)
+})
+
 test('engine: MRU 淘汰 — 上限 12 项目，优先淘汰空闲中最久未活跃的', () => {
   const eng = createStatusEngine(null)
   for (let i = 0; i < 12; i++) {

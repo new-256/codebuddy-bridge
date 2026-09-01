@@ -6,9 +6,9 @@ This directory ships a **standalone, dependency-free MCP (Model Context Protocol
 
 | Tool | Purpose |
 | --- | --- |
-| `codebuddy_run` | Dispatch a coding/build/debug/investigation task to the local codebuddy CLI and return its final answer. Optional `model` / `effort` / `maxTurns` select the codebuddy model and cap agentic turns. |
-| `codebuddy_continue` | Continue an existing codebuddy conversation (`sessionId`, or `latest: true`). |
-| `codebuddy_status` | **Live observation + usage accounting**: what codebuddy is doing RIGHT NOW, **sectioned per project (working directory)** — each project's running count, current step (tool name + arguments or thinking/typing), recent step trail, last completed run, and cumulative usage (`runs` + `totalTokens`, since codebuddy exposes no quota API). Optional `cwd` filters to one project. Call it mid-flight to watch progress. |
+| `codebuddy_run` | Dispatch a task to the local codebuddy CLI and return its final answer. Optional `backend` selects the CLI: `codebuddy` (default, coding) or `workbuddy` (Tencent WorkBuddy — same engine, office scenarios: docs/slides, knowledge base, media generation, WeChat/WeCom replies). Optional `model` / `effort` / `maxTurns` select the model and cap agentic turns. |
+| `codebuddy_continue` | Continue an existing conversation (`sessionId`, or `latest: true`). Routes back to the backend owning the sessionId automatically. |
+| `codebuddy_status` | **Live observation + usage accounting**: what the CLI is doing RIGHT NOW, **sectioned per project (working directory)** — each project's running count, current step (tool name + arguments or thinking/typing), recent step trail, last completed run, and cumulative usage (`runs` + `totalTokens`, since no quota API exists). Optional `cwd` filters to one project. Call it mid-flight to watch progress. |
 
 **Why:** the DSH plugin (preset / dynamic form) only exists inside DSH sessions. With the MCP server, *any* MCP-capable host — Claude Code, Codex, Cherry Studio, Cline, etc. — **discovers the tools itself** (`tools/list`) and decides when to call them, even when no "codebuddy-first" preset is loaded. The agent stays in control of *whether* to delegate to codebuddy; the server guarantees *how* codebuddy runs.
 
@@ -235,7 +235,8 @@ args = ["<repo>/mcp/codebuddy-mcp-server.mjs"]
 
 - `CODEBUDDY_MCP_CWD` — 未传 `cwd` 时 codebuddy 的默认工作目录（默认为服务器内置的工作区路径；多项目环境请显式设置）。
 - `CODEBUDDY_BIN` — 显式指定 codebuddy bin 脚本路径（默认 `%APPDATA%\npm\node_modules\@tencent-ai\codebuddy-code\bin\codebuddy`）。
-- `CODEBUDDY_MCP_ALLOWED_ROOTS` — **安全护栏**：`;`/`,` 分隔的允许工作目录列表。设置后，每次调用的 `cwd`（含会话回落得到的默认值）都必须位于其中之一，否则返回 `CWD_BLOCKED`；未设置则放行（向后兼容）。本服务器以 bypassPermissions 运行 codebuddy，向其他用户提供时务必设置。
+- `WORKBUDDY_BIN` — 显式指定 **WorkBuddy** CLI 路径（`backend="workbuddy"` 用；默认 `C:\Program Files\WorkBuddy\resources\app.asar.unpacked\cli\bin\codebuddy`，随 WorkBuddy 桌面版安装）。未安装 WorkBuddy 时该后端返回带安装指引的 `CODEBUDDY_UNAVAILABLE`。
+- `CODEBUDDY_MCP_ALLOWED_ROOTS` — **安全护栏**：`;`/`,` 分隔的允许工作目录列表。设置后，每次调用的 `cwd`（含会话回落得到的默认值）都必须位于其中之一，否则返回 `CWD_BLOCKED`；未设置则放行（向后兼容）。本服务器以 bypassPermissions 运行 CLI，向其他用户提供时务必设置。
 
 ## 自检
 
