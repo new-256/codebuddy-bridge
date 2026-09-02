@@ -110,6 +110,24 @@ test('buildArgv resolves modes and passes through prefix/options', () => {
   assert.ok(b.argv.includes('--continue'))
 })
 
+test('buildArgv: plan 模式预批 Bash（v1.1.3）—— 非交互下只读 shell 可用，bypass 模式不加白名单', () => {
+  const base = { prompt: 'investigate' }
+  // plan：CLI 在 -p 非交互下默认拒 Bash（报「未获授权」并绕道 PowerShell），
+  // 预批后只读 shell 调查恢复；写入仍由 plan 模式独立禁止。
+  let b = buildArgv(['codebuddy'], { ...base, mode: 'plan' }, {})
+  const i = b.argv.indexOf('--allowedTools')
+  assert.ok(i > 0, 'plan 模式必须带 --allowedTools')
+  assert.equal(b.argv[i + 1], 'Bash')
+  assert.ok(b.argv.includes('--permission-mode') && b.argv[b.argv.indexOf('--permission-mode') + 1] === 'plan', 'plan 门禁仍在')
+  // auto + planActive=true 走同一条路径
+  b = buildArgv(['codebuddy'], base, { defaultMode: 'auto', planActive: true })
+  assert.ok(b.argv.includes('--allowedTools'))
+  // bypassPermissions 本就不受门禁影响，不必加白名单（避免收窄工具面的误解）
+  b = buildArgv(['codebuddy'], base, { defaultMode: 'auto', planActive: false })
+  assert.equal(b.mode, 'bypassPermissions')
+  assert.ok(!b.argv.includes('--allowedTools'), 'bypass 模式不加 --allowedTools')
+})
+
 // ── isLimited（词边界 + 匹配面收窄）────────────────────────────
 
 test('isLimited: status short-circuits', () => {

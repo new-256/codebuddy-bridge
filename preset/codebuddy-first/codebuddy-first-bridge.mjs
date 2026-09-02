@@ -75,11 +75,48 @@ export function apply(ctx) {
   })
   const coreExecute = runner.coreExecute
 
-  function announceMode() {
-    try { ctx.emit('codebuddy/mode', { active: true }) } catch (e) { }
+  // 本会话身份（兜底通道）：host 侧首选自己实时枚举 agents.list() +
+  // agentPresets.composedPreset() 判定哪些会话是 codebuddy-first（见
+  // home-plugin/lib/index.mjs 注释）；这里的上报是那条通道失灵时的备份。
+  // 注意 apply() 阶段 agent 通常尚未就位（preset 正在被组合进去），所以：
+  //   ① 先试 agents.currentInitiator()（组合发生在 withInitiator 链上时可得）；
+  //   ② 拿不到就等第一次工具调用，从 exec.agent 补记（planActiveFor 已证实该字段）。
+  // 全程防御：取不到就退化为不带 sessionId 的旧全局语义，不影响主通道。
+  let SELF_SESSION_ID = null
+  function sessionIdOf(agent) {
+    if (!agent) return null
+    const sid = agent.id || (agent.session && agent.session.id)
+    return typeof sid === 'string' && sid ? sid : null
   }
-  announceMode()
-  try { const t = ctx.setInterval ? ctx.setInterval(announceMode, 30000) : null; if (t && ctx.effect) ctx.effect(() => () => { try { t() } catch (e) {} }) } catch (e) {}
+  try {
+    const agents = typeof ctx.get === 'function' ? ctx.get('agents') : undefined
+    if (agents && typeof agents.currentInitiator === 'function') SELF_SESSION_ID = sessionIdOf(agents.currentInitiator())
+  } catch (e) { }
+
+  function announceMode(active) {
+    try {
+      const payload = { active: active !== false }
+      if (SELF_SESSION_ID) payload.sessionId = SELF_SESSION_ID
+      ctx.emit('codebuddy/mode', payload)
+    } catch (e) { }
+  }
+  // 第一次工具调用时补记会话身份（apply 阶段拿不到的情况）。
+  function noteSession(exec) {
+    if (SELF_SESSION_ID) return
+    try {
+      const sid = sessionIdOf(exec && exec.agent)
+      if (sid) { SELF_SESSION_ID = sid; announceMode(true) }
+    } catch (e) { }
+  }
+  announceMode(true)
+  try {
+    const t = ctx.setInterval ? ctx.setInterval(function () { announceMode(true) }, 30000) : null
+    if (ctx.effect) ctx.effect(() => () => {
+      try { if (t) t() } catch (e) { }
+      // 会话卸载时主动下线：本会话的灯立刻熄灭，不必等 75s 租约到期。
+      announceMode(false)
+    })
+  } catch (e) { }
 
   const runTool = {
     name: 'codebuddy_run',
@@ -102,7 +139,7 @@ export function apply(ctx) {
       }
     },
     output: { schema: OUTPUT_SCHEMA, render: renderResult },
-    execute(args, exec) { return coreExecute(args, exec) }
+    execute(args, exec) { noteSession(exec); return coreExecute(args, exec) }
   }
 
   const continueTool = {
@@ -128,6 +165,7 @@ export function apply(ctx) {
     },
     output: { schema: OUTPUT_SCHEMA, render: renderResult },
     execute(args, exec) {
+      noteSession(exec)
       const a = args || {}
       const mapped = { prompt: a.prompt, backend: a.backend, mode: a.mode, model: a.model, effort: a.effort, maxTurns: a.maxTurns, cwd: a.cwd, timeoutSec: a.timeoutSec, background: a.background }
       if (a.sessionId) mapped.sessionId = a.sessionId

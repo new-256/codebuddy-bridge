@@ -122,6 +122,13 @@ export function buildResult(parsed, outcome, mode, stderrText, stdoutText, backe
 // mode 解析：'auto' → 由 planActive 决定 plan/bypassPermissions（DSH preset）；
 // 'plan' → 只读；其余（'accept-edits' 等）→ bypassPermissions（MCP 默认）。
 // 返回 { argv, timeoutSec, mode }（mode 为解析后的规范值）。
+//
+// plan 模式为何额外预批 Bash（--allowedTools，v1.1.3 修复）：
+// CLI 在 -p 非交互 + plan 模式下默认拒绝 Bash（该档需交互授权，非交互下无人可授），
+// codebuddy 于是报「Bash 工具在无交互模式下未获授权（被拒绝）」并绕道 PowerShell
+// ——同样是 shell，却因门禁不一致白耗回合，有时干脆放弃调查。预批 Bash 后只读
+// shell 调查恢复可用；写入仍被 plan 模式独立禁止（CLI 侧策略，实测：预批 Bash 后
+// 仍拒绝创建文件并说明「该约束优先级高于本次请求」），只读保证不受影响。
 export function buildArgv(prefix, args, opts) {
   const o = opts || {}
   const argv = [prefix[0], ...prefix.slice(1), '-p', String(args.prompt), '--output-format', 'stream-json']
@@ -129,6 +136,7 @@ export function buildArgv(prefix, args, opts) {
   if (mode === 'auto') mode = o.planActive ? 'plan' : 'bypassPermissions'
   if (mode === 'plan') {
     argv.push('--permission-mode', 'plan')
+    argv.push('--allowedTools', 'Bash')
   } else {
     mode = 'bypassPermissions'
     argv.push('--permission-mode', 'bypassPermissions')

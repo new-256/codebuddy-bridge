@@ -16,22 +16,44 @@
 // 会话关闭后心跳停止，租约到期自动熄灭——否则任何会话加载过一次 preset 之后，
 // 所有会话（含非 codebuddy-first 模式）的标题栏都会常驻「CB 就绪」灯。
 //
+// 按会话判定（v1.1.3）：端点返回 presetSessions —— 当前组合了 codebuddy-first
+// preset 的会话 id 名单。客户端只需判断「我的 sessionId 在不在名单里」，在/不在
+// 都是确定答案，不必去猜 DSH 客户端会话摘要里 agentPreset 字段的位置（0.3.14 刚
+// 把它移进 projectionValues，v1.1.2 的判定就此失效；默认会话更是根本没有该字段
+// → 判定「未知」→ 回退全局租约 → 普通会话仍亮灯）。
+//
+// 名单有两个来源，取并集：
+//   A. 实时枚举（首选，权威）：agents.list() 遍历活着的 agent，用
+//      agentPresets.composedPreset(agent.ctx) 读它实际组合的 preset id。
+//      每次请求现算，对已经开着的会话立即生效，不依赖任何上报。
+//   B. preset 上报（兜底）：preset 在 codebuddy/mode 事件里带上自己的 sessionId
+//      并按会话记租约。A 不可用时（服务缺失/DSH 内部 API 变动）仍能工作。
+// 两源都失灵时退回全局租约 presetActive（老语义）。
+//
 // 家级（cordis.patch.yml）插件运行在 host 组合的 root realm；会话内插件的
 // ctx.emit 事件是 app 级广播，不受 isolate realm（只隔离服务）影响。
 //
-// 路由返回 JSON：{ state, running, projects[], presetActive }。
+// 路由返回 JSON：{ state, running, projects[], presetActive, presetSessions[], lastModeAt }。
 
 export const PRESET_TTL_MS = 75000
+export const PRESET_ID = 'codebuddy-first'
 
-// 可独立于 Cordis 测试的纯状态机：注入 now（时钟）与 ttlMs（租约时长）即可。
+// 同时在线的 codebuddy-first 会话上限（防御异常上报导致的无界增长）。
+const MAX_SESSIONS = 64
+
+// 可独立于 Cordis 测试的纯状态机：注入 now（时钟）、ttlMs（租约时长）与
+// listPresetSessions（实时枚举器，返回 codebuddy-first 会话 id 数组）即可。
 export function createIndicatorState(opts) {
   const o = opts || {}
   const now = typeof o.now === 'function' ? o.now : Date.now
   const ttlMs = o.ttlMs != null ? o.ttlMs : PRESET_TTL_MS
+  const listPresetSessions = typeof o.listPresetSessions === 'function' ? o.listPresetSessions : null
   const projects = Object.create(null)
   const MAX_PROJECTS = 24
   let presetActiveUntil = 0
   let lastModeAt = 0
+  // sessionId -> 租约到期时间戳（按会话判定的权威来源）。
+  const sessionLeases = Object.create(null)
 
   function projectName(cwd) {
     const s = String(cwd || '')
@@ -43,11 +65,29 @@ export function createIndicatorState(opts) {
   // 不主动发 false——依赖租约到期——但收到即尊重，面向未来语义完整）。
   function onMode(payload) {
     try {
+      const sid = payload && typeof payload.sessionId === 'string' && payload.sessionId ? payload.sessionId : null
       if (payload && payload.active) {
         presetActiveUntil = now() + ttlMs
         lastModeAt = now()
+        if (sid) {
+          sessionLeases[sid] = now() + ttlMs
+          // 上限保护：超出时丢掉最早到期的租约（正常情况过期项已被 snapshot 清掉）。
+          const ids = Object.keys(sessionLeases)
+          if (ids.length > MAX_SESSIONS) {
+            ids.sort((a, b) => sessionLeases[a] - sessionLeases[b])
+            for (let i = 0; i < ids.length - MAX_SESSIONS; i++) delete sessionLeases[ids[i]]
+          }
+        }
       } else {
-        presetActiveUntil = 0
+        // 明确下线：带 sessionId 只熄灭该会话（最后一个走时顺带清全局租约，让仍
+        // 读 presetActive 的旧客户端也立刻熄灭）；不带 sessionId 的旧版 preset
+        // 按老语义视为全局下线。
+        if (sid) {
+          delete sessionLeases[sid]
+          if (Object.keys(sessionLeases).length === 0) presetActiveUntil = 0
+        } else {
+          presetActiveUntil = 0
+        }
       }
     } catch (e) { }
   }
@@ -85,7 +125,26 @@ export function createIndicatorState(opts) {
   // 计算对外快照（纯函数式：不修改内部表）。
   function snapshot() {
     const t = now()
-    const presetActive = t < presetActiveUntil
+    // 会话名单 = 实时枚举（权威）∪ preset 上报租约（兜底）。
+    const seen = Object.create(null)
+    const presetSessions = []
+    if (listPresetSessions) {
+      try {
+        const live = listPresetSessions()
+        if (Array.isArray(live)) {
+          for (const sid of live) {
+            if (typeof sid === 'string' && sid && !seen[sid]) { seen[sid] = 1; presetSessions.push(sid) }
+          }
+        }
+      } catch (e) { }
+    }
+    // 顺手清理过期上报租约。
+    for (const sid of Object.keys(sessionLeases)) {
+      if (t < sessionLeases[sid]) {
+        if (!seen[sid]) { seen[sid] = 1; presetSessions.push(sid) }
+      } else delete sessionLeases[sid]
+    }
+    const presetActive = t < presetActiveUntil || presetSessions.length > 0
     const OK_HOLD_MS = presetActive ? 10 * 60 * 1000 : 8000
     const STALE_MS = 10 * 60 * 1000
     const list = Object.keys(projects)
@@ -100,7 +159,7 @@ export function createIndicatorState(opts) {
       .sort((a, b) => b.updatedAt - a.updatedAt)
     const running = list.reduce((n, p) => n + p.running, 0)
     const state = running > 0 ? 'running' : (list.some((p) => p.fallbackActive) ? 'fallback' : (list.length ? 'ok' : 'idle'))
-    return { state, running, projects: list, presetActive, lastModeAt }
+    return { state, running, projects: list, presetActive, presetSessions, lastModeAt }
   }
 
   return { onMode, mergeSnapshot, snapshot }
@@ -110,7 +169,28 @@ export const name = 'codebuddy-indicator'
 export const inject = []
 
 export function apply(ctx) {
-  const st = createIndicatorState()
+  // 实时枚举器：遍历活着的 agent，读它实际组合的 preset id。全程防御——任一
+  // 服务或字段缺失（DSH 内部 API 变动）都只是返回空数组，退回 preset 上报兜底。
+  function listPresetSessions() {
+    try {
+      const agents = typeof ctx.get === 'function' ? ctx.get('agents') : undefined
+      const presets = typeof ctx.get === 'function' ? ctx.get('agentPresets') : undefined
+      if (!agents || typeof agents.list !== 'function') return []
+      if (!presets || typeof presets.composedPreset !== 'function') return []
+      const out = []
+      for (const agent of agents.list()) {
+        try {
+          if (!agent || !agent.ctx) continue
+          if (presets.composedPreset(agent.ctx) !== PRESET_ID) continue
+          const sid = agent.id || (agent.session && agent.session.id)
+          if (typeof sid === 'string' && sid) out.push(sid)
+        } catch (e) { }
+      }
+      return out
+    } catch (e) { return [] }
+  }
+
+  const st = createIndicatorState({ listPresetSessions })
 
   ctx.on('codebuddy/mode', st.onMode)
 

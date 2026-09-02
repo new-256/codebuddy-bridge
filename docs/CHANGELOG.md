@@ -2,6 +2,22 @@
 
 本项目遵循 [语义化版本](https://semver.org/)；版本号同步 `package.json`、Git tag 与 GitHub Release（`npm run check` 中的 `scripts/verify.mjs` 在 CI 里锁三处一致）。
 
+## [1.1.3] - 2026-09-03
+
+修复：① 计划模式下 codebuddy 的 Bash 被门禁拦死（「无交互模式下未获授权」）；② 状态灯的会话判定改用自有权威通道，不再随 DSH 客户端 API 漂移。
+
+### 修复
+
+- **① 计划模式 Bash 门禁（新发现）**：DSH 处于计划模式时，preset 把 `mode=auto` 映射成 `--permission-mode plan`。CLI 在 `-p` 非交互 + plan 下**默认拒绝 Bash**（该档需交互授权，非交互下无人可授），codebuddy 于是报「**Bash 工具在无交互模式下未获授权（被拒绝），所以我改用 PowerShell 执行了同一条命令**」——同样是 shell，却因门禁不一致白耗回合，有时干脆放弃调查。修复：plan 模式额外传 `--allowedTools Bash` **预批**只读 shell。实测确认：Bash 恢复可用（`tool_use` 出现且命令真跑），**写入仍被 plan 模式独立禁止**（预批后 codebuddy 仍拒绝创建文件并说明「该约束优先级高于本次请求」），`Read`/`Grep` 等工具不受影响（`--allowedTools` 是预批而非排他白名单）。`bypassPermissions` 模式本不受门禁影响，不加白名单。
+- **② 状态灯会话判定改为 host 侧实时枚举**：v1.1.2 靠读 DSH 客户端会话摘要的 `agentPreset`（0.3.14 起在 `projectionValues` 里）判断「本会话是否 codebuddy-first」。但**默认会话本就没有这个字段** → 判定「未知」→ 回退全局租约 → 普通会话仍可能亮灯；且该字段位置随 DSH 版本漂移（0.3.14 刚移过一次）。修复：家级插件**自己在 host 侧算**——`agents.list()` 遍历活着的 agent，用 `agentPresets.composedPreset(agent.ctx)` 读它实际组合的 preset id，端点新增 `presetSessions` 名单（每次请求现算，**对已经开着的会话立即生效**，无需重开）。客户端只需判断「我的 sessionId 在不在名单里」。
+- **判定逻辑设两条独立通道且「任一肯定即肯定」**：host 名单（权威）与 DSH 客户端摘要通道并行，任一给出肯定即显示；都不肯定时才让名单做否定；两者皆无结论则回退全局租约。这不是冗余而是**安全阀**：万一两端 `sessionId` 取法失配，结果是「灯不亮」而不是「永久不亮」——若让名单单方面否定，一旦失配就比原缺陷更糟。
+- **兜底上报通道**：preset 仍在 `codebuddy/mode` 事件里带自己的 sessionId（apply 阶段试 `agents.currentInitiator()`，拿不到则在第一次工具调用时从 `exec.agent` 补记），host 按会话记租约并与实时枚举取并集；实时枚举不可用时（服务缺失或 DSH 内部 API 变动）仍能工作。preset 卸载时主动发 `active:false` + sessionId，该会话立刻熄灯，不必等 75s；最后一个会话离场时顺带清全局租约，让仍读 `presetActive` 的旧客户端也立即熄灭。
+- 端点契约扩展为 `{ state, running, projects[], presetActive, presetSessions[], lastModeAt }`（新增字段向后兼容）。会话名单上限 64，超出丢最早到期。
+
+### 测试
+
+- 测试 58→66 例：实时枚举为权威来源（无需任何上报即产出名单、会话关闭立即离场）、双源取并集且去重、枚举器抛错时安全降级到上报租约、按会话租约（多会话共存 / 单会话到期离场）、带 `sessionId` 的主动下线（只熄该会话 / 最后一个离场清全局）、旧版 preset 无 `sessionId` 的全局语义、名单容量上限、`apply()` 端到端（枚举出的 codebuddy-first 会话 ∪ 上报会话经路由送达，普通会话不在名单），以及 plan 模式预批 Bash 的 argv 契约。
+
 ## [1.1.2] - 2026-09-03
 
 适配：**DSH Desktop 0.3.14 / @deepseek-ai/dsh 0.1.2-alpha.5**（本次 DSH 更新带来的客户端 API 变更修复 + 全线 DSH 版本适配标注）。

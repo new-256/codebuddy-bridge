@@ -8,11 +8,15 @@
 //   fallback → 琥珀色圆点, "↩ CB"
 //   idle     → 灰色圆点, "CB"
 //
-// 可见性（v1.1.1）：活动灯（项目 pill）全局显示；「CB 就绪」空转灯只在该会话
-// 本身处于 codebuddy-first 模式时显示——新框架（≥0.3.14）经会话作用域槽位的标准
-// props（sessionId + useSessions）读本会话投影值 agentPreset；旧框架经
-// inject(sessionId) + sessions.list 快照；判定不可用时回退端点的全局
-// presetActive（心跳租约，见 host 半）。
+// 可见性（v1.1.1 起）：活动灯（项目 pill）全局显示；「CB 就绪」空转灯只在该会话
+// 本身处于 codebuddy-first 模式时显示。判定走两条独立通道，**任一肯定即肯定**：
+//   ① host 端点的 presetSessions 名单（v1.1.3 起，权威）——host 实时枚举
+//      agents.list() + agentPresets.composedPreset()，对已开会话立即生效；
+//   ② DSH 客户端会话摘要（新框架 ≥0.3.14 经标准 props sessionId + useSessions 读
+//      projectionValues.agentPreset；旧框架经 inject(sessionId) + sessions.list）。
+// 都不肯定时才用名单做否定；两者皆无结论则回退全局 presetActive（心跳租约）。
+// v1.1.2 只有通道 ②，而默认会话本就没有 agentPreset 字段 → 判「未知」→ 回退全局
+// 租约 → 普通会话仍亮灯；通道 ① 就是为消除这个漏洞加的。
 
 window.__ModuleLoader__.load({
   id: "codebuddy-indicator",
@@ -194,7 +198,24 @@ window.__ModuleLoader__.load({
           });
       }
       const presetKnown = myPreset !== PRESET_UNKNOWN;
-      const iAmCbFirst = presetKnown ? myPreset === PRESET_CODEBUDDY_FIRST : null;
+      // 「本会话是否 codebuddy-first」三态判定（null = 未知 → 回退全局租约）。
+      // 两条独立通道，**任一肯定即肯定**，只有都不肯定时才让 host 名单做否定：
+      //  ① host 名单 presetSessions（权威）：host 实时枚举 agents.list() +
+      //     agentPresets.composedPreset() 得到的 codebuddy-first 会话 id；
+      //  ② DSH 客户端会话摘要（标准 props / 旧式注入，见文件头注释）。
+      // 「任一肯定即肯定」不是冗余而是安全阀：万一两端 sessionId 取法失配
+      // （客户端拿不到 id、或 DSH 改了 id 形状），退化成「灯不亮」而不是误判；
+      // 若反过来让名单单方面否定，一旦失配就会**永久不亮**——比原缺陷更糟。
+      const hostList = (s && Array.isArray(s.presetSessions)) ? s.presetSessions : null;
+      const inHostList = !!(hostList && sessionId && hostList.indexOf(sessionId) >= 0);
+      const clientSaysYes = presetKnown && myPreset === PRESET_CODEBUDDY_FIRST;
+      const iAmCbFirst = (inHostList || clientSaysYes)
+        ? true
+        : (presetKnown
+            ? false                                              // 客户端明确读到别的 preset → 确定不是
+            : ((hostList && hostList.length > 0 && sessionId)
+                ? false                                          // 名单有内容而我不在其中 → 确定不是
+                : null));                                        // 无从判断 → 回退全局租约
       react.useEffect(function () {
         let alive = true;
         let timerId = null;

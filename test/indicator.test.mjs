@@ -16,7 +16,7 @@ function makeState() {
 
 test('indicator: 初始态 —— 无事件时 presetActive=false（非 preset 模式不渲染灯）', () => {
   const { st } = makeState()
-  assert.deepEqual(st.snapshot(), { state: 'idle', running: 0, projects: [], presetActive: false, lastModeAt: 0 })
+  assert.deepEqual(st.snapshot(), { state: 'idle', running: 0, projects: [], presetActive: false, presetSessions: [], lastModeAt: 0 })
 })
 
 test('indicator: presetActive 心跳租约（v1.1.1 修复位）—— 无后续心跳则到期熄灭', () => {
@@ -48,6 +48,78 @@ test('indicator: active:false 立即熄灭', () => {
   st.onMode({ active: true })
   st.onMode({ active: false })
   assert.equal(st.snapshot().presetActive, false)
+})
+
+test('indicator: 实时枚举为权威来源（v1.1.3）—— 无需上报即产出会话名单', () => {
+  let live = ['live-1', 'live-2']
+  let t = 0
+  const st = createIndicatorState({ now: () => t, ttlMs: 75000, listPresetSessions: () => live })
+  assert.deepEqual(st.snapshot().presetSessions.slice().sort(), ['live-1', 'live-2'], '未收到任何 mode 事件也能判定')
+  assert.equal(st.snapshot().presetActive, true)
+  // 会话关闭 → 枚举立即不含它（无需等租约）
+  live = ['live-2']
+  assert.deepEqual(st.snapshot().presetSessions, ['live-2'])
+  live = []
+  assert.deepEqual(st.snapshot().presetSessions, [])
+  assert.equal(st.snapshot().presetActive, false, '两源皆空 → 灯灭')
+})
+
+test('indicator: 双源取并集且去重 —— 枚举 ∪ 上报租约', () => {
+  let t = 0
+  const st = createIndicatorState({ now: () => t, ttlMs: 75000, listPresetSessions: () => ['a', 'b'] })
+  st.onMode({ active: true, sessionId: 'b' })   // 与枚举重合
+  st.onMode({ active: true, sessionId: 'c' })   // 仅上报有
+  assert.deepEqual(st.snapshot().presetSessions.slice().sort(), ['a', 'b', 'c'], '并集')
+  assert.equal(st.snapshot().presetSessions.filter((x) => x === 'b').length, 1, '去重')
+})
+
+test('indicator: 枚举器抛错时安全降级到上报租约', () => {
+  let t = 0
+  const st = createIndicatorState({ now: () => t, ttlMs: 75000, listPresetSessions: () => { throw new Error('DSH 内部 API 变动') } })
+  st.onMode({ active: true, sessionId: 's1' })
+  assert.deepEqual(st.snapshot().presetSessions, ['s1'], '枚举失败不影响兜底通道')
+  assert.equal(st.snapshot().presetActive, true)
+})
+
+test('indicator: 按会话租约（v1.1.3）—— presetSessions 只含仍在心跳的会话', () => {
+  const { st, tick } = makeState()
+  st.onMode({ active: true, sessionId: 's1' })
+  assert.deepEqual(st.snapshot().presetSessions, ['s1'])
+  assert.equal(st.snapshot().presetActive, true, '有会话在线 → 全局标志同时为真（旧客户端兼容）')
+  tick(30000); st.onMode({ active: true, sessionId: 's2' })
+  assert.deepEqual(st.snapshot().presetSessions.slice().sort(), ['s1', 's2'])
+  tick(45001)  // s1 未续期（t=75001 > s1 租约 75000），s2 仍在（到 105000）
+  assert.deepEqual(st.snapshot().presetSessions, ['s2'], 's1 租约到期离场，s2 保留')
+})
+
+test('indicator: 会话关闭主动下线 —— active:false 带 sessionId 只熄灭该会话', () => {
+  const { st } = makeState()
+  st.onMode({ active: true, sessionId: 's1' })
+  st.onMode({ active: true, sessionId: 's2' })
+  st.onMode({ active: false, sessionId: 's1' })
+  assert.deepEqual(st.snapshot().presetSessions, ['s2'], 's1 立即离场，不必等 75s 租约')
+  assert.equal(st.snapshot().presetActive, true, '仍有 s2 在线')
+  st.onMode({ active: false, sessionId: 's2' })
+  assert.deepEqual(st.snapshot().presetSessions, [])
+  assert.equal(st.snapshot().presetActive, false, '最后一个会话离场 → 全局标志也熄灭（旧客户端立即熄灯）')
+})
+
+test('indicator: 旧版 preset（不带 sessionId）仍走全局租约语义', () => {
+  const { st, tick } = makeState()
+  st.onMode({ active: true })
+  assert.deepEqual(st.snapshot().presetSessions, [], '没有会话名单 → 客户端回退全局判定')
+  assert.equal(st.snapshot().presetActive, true)
+  tick(75001)
+  assert.equal(st.snapshot().presetActive, false)
+})
+
+test('indicator: 会话名单容量上限（MAX_SESSIONS=64，丢最早到期）', () => {
+  const { st, tick } = makeState()
+  for (let i = 0; i < 70; i++) { tick(1); st.onMode({ active: true, sessionId: 's' + i }) }
+  const list = st.snapshot().presetSessions
+  assert.equal(list.length, 64, '超出上限被裁剪')
+  assert.ok(!list.includes('s0'), '最早到期的被丢弃')
+  assert.ok(list.includes('s69'), '最新的保留')
 })
 
 test('indicator: 非 preset 模式 ok 状态仅保持 8s；preset 模式保持 10 分钟', () => {
@@ -115,10 +187,18 @@ test('indicator: apply() 装配 —— mode/status 事件入状态机，webServe
   const provided = Object.create(null)
   let injectCb = null
   let route = null
+  // 实时枚举依赖的两个服务：一个 codebuddy-first 会话 + 一个普通会话
+  const cbAgent = { id: 'live-cb', ctx: { tag: 'cb' } }
+  const otherAgent = { id: 'live-other', ctx: { tag: 'other' } }
+  const services = {
+    agents: { list: () => [cbAgent, otherAgent] },
+    agentPresets: { composedPreset: (c) => (c && c.tag === 'cb' ? 'codebuddy-first' : undefined) }
+  }
   const ctx = {
     on: (name, cb) => { handlers[name] = cb },
     provide: (name, svc) => { provided[name] = svc },
-    inject: (deps, cb) => { injectCb = cb }
+    inject: (deps, cb) => { injectCb = cb },
+    get: (name) => services[name]
   }
   apply(ctx)
   assert.ok(handlers['codebuddy/mode'], 'mode 事件已挂')
@@ -142,6 +222,11 @@ test('indicator: apply() 装配 —— mode/status 事件入状态机，webServe
   assert.equal(parsed.presetActive, true)
   assert.equal(parsed.state, 'ok')
   assert.equal(parsed.projects[0].cwd, '/p/x')
+  // 按会话租约端到端：带 sessionId 的宣告要出现在路由返回的 presetSessions 里
+  handlers['codebuddy/mode']({ active: true, sessionId: 'sess-abc' })
+  registered[0].handler({}, res)
+  const list = JSON.parse(body).presetSessions.slice().sort()
+  assert.deepEqual(list, ['live-cb', 'sess-abc'], '实时枚举（live-cb，非上报）∪ 上报（sess-abc）经路由送达；普通会话 live-other 不在名单')
   // collector 直推（动态形态通道）
   provided.codebuddyCollector.mergeSnapshot({ projects: [{ cwd: '/p/y', state: 'running', running: 1 }] })
   registered[0].handler({}, res)
