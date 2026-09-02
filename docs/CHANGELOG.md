@@ -2,6 +2,22 @@
 
 本项目遵循 [语义化版本](https://semver.org/)；版本号同步 `package.json`、Git tag 与 GitHub Release（`npm run check` 中的 `scripts/verify.mjs` 在 CI 里锁三处一致）。
 
+## [1.1.1] - 2026-09-02
+
+修复：非 codebuddy-first 会话里状态灯常驻不灭（两层原因，都修）。
+
+### 修复
+
+- **① 家级插件 host 半 `presetActive` 粘滞**：`codebuddy/mode {active:true}` 事件把 `presetActive` 永久置 true——既无 TTL，preset 会话关闭时也无 `active:false`。DSH 进程启动后只要有任何会话加载过一次 codebuddy-first preset，之后即使再无 codebuddy-first 会话，所有会话（含普通模式）的标题栏都会常驻灰灯。修复：改为**心跳租约**——preset 每 30s 宣告一次续期，TTL 75s（≈两拍容差，容忍事件循环抖动）；最后一个 codebuddy-first 会话关闭后 ≤75s 自动熄灭；收到 `active:false` 立即熄灭。host 半状态逻辑抽取为可独立测试的 `createIndicatorState()`（注入时钟 + TTL），端点新增 `lastModeAt` 诊断字段。
+- **② 「CB 就绪」空转灯是全局的**：只要任何一个标签页开着 codebuddy-first 会话（哪怕空闲），其余所有会话（含普通模式）都会显示「CB 就绪」。修复：**会话级判定**——客户端经 slot `inject(sessionId)` 拿到本会话 id，从客户端 `sessions.list` 快照读取本会话的 `agentPreset`（preset id = 目录名 `codebuddy-first`）本地判定；空转灯只在该会话本身是 codebuddy-first 时显示，**活动灯（项目 pill）保持全局显示**。快照/服务不可用（旧版 DSH）时回退到全局租约判定。
+- 家级插件 host 半首获测试覆盖：`test/indicator.test.mjs` 9 例（初始态、租约到期熄灭、心跳续期、`active:false`、ok 保持窗口 8s/10min、running/fallback 不受窗口影响、容量淘汰 MRU、无损 JSON、`apply()` 装配 + webServer 路由）。测试 49→58 例。
+
+### 验证
+
+- `npm test`：58/58 通过。
+- 实机（host 半热加载部署，cordis.patch.yml `?v=3`）：`lastModeAt` 采样证实存在开着的 codebuddy-first 会话每 30s 心跳续期（相隔恰 30014ms）；新实例装载后无心跳时 `presetActive` 立即为 false。
+- 客户端半：浏览器花名册已供应新 bundle（含 per-session 判定）；本会话（非 codebuddy-first）刷新页面后空转灯不再渲染，即使另一标签页的 codebuddy-first 心跳仍在续期。
+
 ## [1.1.0] - 2026-09-02
 
 双后端：`backend="workbuddy"` 把任务派发给 **腾讯 WorkBuddy**（CodeBuddy 的同引擎「孪生兄弟」，主打办公场景）。

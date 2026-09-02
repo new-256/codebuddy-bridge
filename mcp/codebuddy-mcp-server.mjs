@@ -37,7 +37,7 @@ import {
 } from '../core/codebuddy-core.mjs'
 
 const NAME = 'codebuddy-mcp-server'
-const VERSION = '1.1.0'
+const VERSION = '1.1.1'
 const PROTOCOL = '2024-11-05'
 
 // Default cwd for codebuddy calls that do not pass one (override: CODEBUDDY_MCP_CWD).

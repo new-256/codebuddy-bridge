@@ -7,6 +7,12 @@
 //   failed   → 红色圆点, "✗ CB"
 //   fallback → 琥珀色圆点, "↩ CB"
 //   idle     → 灰色圆点, "CB"
+//
+// 可见性（v1.1.1）：活动灯（项目 pill）全局显示；「CB 就绪」空转灯只在该会话
+// 本身处于 codebuddy-first 模式时显示——经 slot inject(sessionId) 拿到本会话
+// id，再从客户端 sessions.list 快照读取该会话的 agentPreset（preset id 即目录
+// 名 'codebuddy-first'）本地判定。快照/服务不可用时回退到端点的全局
+// presetActive（心跳租约，见 host 半）。
 
 window.__ModuleLoader__.load({
   id: "codebuddy-indicator",
@@ -93,7 +99,6 @@ window.__ModuleLoader__.load({
       const s = props.s;
       const onClose = props.onClose;
       const rows = [];
-      
       if (s && Array.isArray(s.projects) && s.projects.length) {
         s.projects.forEach(function (p, i) {
           const head = (p.state === "running" ? "\u27F3 " : p.state === "ok" ? "\u2713 " : p.state === "failed" ? "\u2717 " : p.state === "fallback" ? "\u21A9 " : "") + (p.name || p.cwd);
@@ -127,7 +132,7 @@ window.__ModuleLoader__.load({
       } else {
         rows.push(react.createElement("div", { key: "empty", className: "cb-pop-empty" }, "暂无 codebuddy 活动"));
       }
-      const headText = "codebuddy 状态" + (s && s.state ? " · " + s.state + (s.running > 0 ? " (" + s.running + " running)" : "") : "") + (s && s.presetActive ? " · codebuddy 优先" : " · 普通模式");
+      const headText = "codebuddy 状态" + (s && s.state ? " · " + s.state + (s.running > 0 ? " (" + s.running + " running)" : "") : "") + (typeof props.mode === "string" ? props.mode : (s && s.presetActive ? " · codebuddy 优先" : " · 普通模式"));
       return react.createElement("div", { className: "cb-pop-overlay", onClick: onClose },
         react.createElement("div", { className: "cb-pop-panel", onClick: function (e) { e.stopPropagation(); } },
           react.createElement("div", { className: "cb-pop-head" },
@@ -136,13 +141,34 @@ window.__ModuleLoader__.load({
           react.createElement("div", { className: "cb-pop-body" }, rows)));
     }
 
-    function Indicator() {
+    // per-session preset 判定：sessions.list 快照（byId[sessionId].agentPreset）。
+    // UNKNOWN 哨兵必须是稳定原始值（useSyncExternalStore 的 getSnapshot 契约）。
+    const PRESET_UNKNOWN = "\u0000unknown";
+    const PRESET_CODEBUDDY_FIRST = "codebuddy-first";
+    function subscribeNoop() { return function () { }; }
+
+    function Indicator(props) {
+      const sessionId = props && props.sessionId;
+      const sessionsSvc = props && props.sessionsSvc;
       const st = react.useState(null);
       const s = st[0];
       const setS = st[1];
       const ot = react.useState(false);
       const open = ot[0];
       const setOpen = ot[1];
+      // 本会话的 agent preset（三态：已知 'codebuddy-first' / 已知其他 / UNKNOWN）
+      const myPreset = react.useSyncExternalStore(
+        (sessionsSvc && sessionsSvc.list) ? sessionsSvc.list.subscribe : subscribeNoop,
+        function () {
+          try {
+            if (!sessionsSvc || !sessionsSvc.list) return PRESET_UNKNOWN;
+            const snap = sessionsSvc.list.getSnapshot();
+            const sum = (snap && snap.byId && sessionId) ? snap.byId[sessionId] : undefined;
+            return (sum && typeof sum.agentPreset === "string") ? sum.agentPreset : PRESET_UNKNOWN;
+          } catch (e) { return PRESET_UNKNOWN; }
+        });
+      const presetKnown = myPreset !== PRESET_UNKNOWN;
+      const iAmCbFirst = presetKnown ? myPreset === PRESET_CODEBUDDY_FIRST : null;
       react.useEffect(function () {
         let alive = true;
         let timerId = null;
@@ -166,7 +192,9 @@ window.__ModuleLoader__.load({
         return function () { window.removeEventListener("keydown", h); };
       }, [open]);
       const hasProjects = s && Array.isArray(s.projects) && s.projects.length;
-      if (!hasProjects && !(s && s.presetActive)) {
+      // 空转「就绪」灯的显示资格：本会话 codebuddy-first；判定不可用时回退全局租约。
+      const readyShow = iAmCbFirst === true || (iAmCbFirst === null && !!(s && s.presetActive));
+      if (!hasProjects && !readyShow) {
         return null;
       }
       const openDetail = function () { setOpen(true); };
@@ -195,9 +223,12 @@ window.__ModuleLoader__.load({
           react.createElement("span", { className: "cb-dot" }), react.createElement("span", null, text));
       }
       if (!open) return light;
+      const modeText = iAmCbFirst === true ? " · 本会话 codebuddy 优先"
+        : (iAmCbFirst === false ? " · 普通模式"
+          : (s && s.presetActive ? " · codebuddy 优先（其他会话）" : " · 普通模式"));
       return react.createElement(react.Fragment, null,
         light,
-        react.createElement(Popup, { s: s, onClose: function () { setOpen(false); } }));
+        react.createElement(Popup, { s: s, mode: modeText, onClose: function () { setOpen(false); } }));
     }
 
     function apply(ctx) {
@@ -206,7 +237,7 @@ window.__ModuleLoader__.load({
         const slots = scope.get("slots");
         if (slots === undefined) return;
         scope.slots.inject("conversation.session.header.utilities", function () {
-          return slots.register({ name: "conversation.session.header.utilities", id: "codebuddy-indicator-home", order: 50 }, function () { return react.createElement(Indicator); });
+          return slots.register({ name: "conversation.session.header.utilities", id: "codebuddy-indicator-home", order: 50, inject: function (sessionId) { return { sessionId: sessionId, sessionsSvc: scope.get("sessions") }; } }, function (props) { return react.createElement(Indicator, props); });
         });
       });
     }
