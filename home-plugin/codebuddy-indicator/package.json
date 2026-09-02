@@ -1,7 +1,7 @@
 {
   "name": "codebuddy-indicator",
   "description": "codebuddy 状态灯（家级）：收集各会话 codebuddy-first-bridge 推送的 codebuddy 运行状态，经 webServer HTTP 路由暴露给浏览器，在会话标题栏按项目（工作目录）分别显示状态灯。随软件启动、所有会话自动可见。",
-  "version": "1.1.1",
+  "version": "1.1.2",
   "private": true,
   "type": "module",
   "main": "./lib/client-entry.mjs",
@@ -13,6 +13,11 @@
   "dsh": {
     "client": {
       "platform": "web"
+    },
+    "compat": {
+      "desktop": ">=0.3.4",
+      "backend": ">=0.1.2-alpha.4",
+      "verified": "DSH Desktop 0.3.5 & 0.3.14 / @deepseek-ai/dsh 0.1.2-alpha.5"
     }
   },
   "license": "MIT"

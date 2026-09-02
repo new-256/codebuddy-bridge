@@ -189,11 +189,12 @@ codebuddy-first-bridge/
 
 版本管理遵循语义化版本（`package.json` + Git tag + GitHub Release）：
 
-| 版本 | 内容 |
-| --- | --- |
-| [v1.1.1](https://github.com/new-256/codebuddy-bridge/releases/tag/v1.1.1) | **修复：非 codebuddy-first 会话状态灯常驻**（两层原因都修）：① 家级插件 `presetActive` 原为粘滞标志——DSH 启动后只要有任何会话加载过一次 codebuddy-first preset，之后所有会话都常驻「CB 就绪」灯；改为**心跳租约**（preset 每 30s 宣告续期、TTL 75s、`active:false` 立即熄灭），最后一个 codebuddy-first 会话关闭后 ≤75s 自动熄灭。② 「CB 就绪」空转灯从全局改为**会话级**——客户端从 `sessions.list` 快照读本会话 `agentPreset` 本地判定，只在该会话本身是 codebuddy-first 时显示，活动灯（项目 pill）保持全局；host 半抽取为可测的 `createIndicatorState()` 并首获测试覆盖。测试 49→58 例 |
-| [v1.1.0](https://github.com/new-256/codebuddy-bridge/releases/tag/v1.1.0) | **双后端：WorkBuddy 接入**。`backend="workbuddy"` 把办公任务（文档/幻灯/表格、知识库、图片视频生成、微信/企微回复）派发给腾讯 WorkBuddy——CodeBuddy 的**同引擎孪生 CLI**（同一 stream-json 协议，实测逐字段兼容），登录态随桌面应用共享。**会话感知后端路由**：两 CLI 各自维护会话存储，续接时按 sessionId 自动路由回所属 CLI；结果带 `backend` 字段、状态带 `[workbuddy]` 标记；MCP 未装 WorkBuddy 时返回带安装指引的错误。测试套件扩至 49 例 |
-| [v1.0.0](https://github.com/new-256/codebuddy-bridge/releases/tag/v1.0.0) | **首个正式版本**：`codebuddy_run` / `codebuddy_continue` / `codebuddy_status` 三工具 + codebuddy 优先策略 + 受限回退弹窗 + 家级实时状态灯 + 动态形态 + 零依赖 MCP 服务器（含 `CODEBUDDY_MCP_ALLOWED_ROOTS` 白名单护栏）+ 按项目 token 用量统计（codebuddy 无套餐额度 API，以 token 计量替代）+ 指定 `model`/`effort`/`maxTurns`；`core/` 共享核心（单一事实来源 + 生成派生产物 + 同步锁定）；可靠性基线（全失败路径可用、会话感知 cwd 回落、单次弹窗、后台挂起守卫、限流判定收窄、跨 chunk 半行安全解析）由 44 例故障注入回归测试锁定，CI 语法矩阵 + 测试 + 版本三处锁死 |
+| 版本 | 适配 DSH | 内容 |
+| --- | --- | --- |
+| [v1.1.2](https://github.com/new-256/codebuddy-bridge/releases/tag/v1.1.2) | Desktop 0.3.4+（实测 0.3.5 与 0.3.14）/ dsh 0.1.2-alpha.4+ | **适配 DSH Desktop 0.3.14 / dsh 0.1.2-alpha.5**。DSH 插件体系重构后客户端会话摘要的 `agentPreset` 移入 `projectionValues` 投影值、槽位 `inject` 改零参调用，v1.1.1 的会话级就绪灯判定失效（回归为全局灯）；修复为**双通道**：优先框架标准 props（`sessionId` + `useSessions` 钩子，读 `projectionValues.agentPreset`），回退旧式 `inject(sessionId)` + `sessions.list` 快照，两通道同时认新旧摘要形状；家级插件 package.json 声明 `dsh.compat`（desktop/backend/verified）；README 版本表增「适配 DSH」列、历史 Release 补标 DSH 版本；combo 花名册 + HMR 内容指纹逐字节实测命中 |
+| [v1.1.1](https://github.com/new-256/codebuddy-bridge/releases/tag/v1.1.1) | Desktop 0.3.5 开发验证；0.3.14 实测兼容（客户端判定通道需 v1.1.2） | **修复：非 codebuddy-first 会话状态灯常驻**（两层原因都修）：① 家级插件 `presetActive` 原为粘滞标志——DSH 启动后只要有任何会话加载过一次 codebuddy-first preset，之后所有会话都常驻「CB 就绪」灯；改为**心跳租约**（preset 每 30s 宣告续期、TTL 75s、`active:false` 立即熄灭），最后一个 codebuddy-first 会话关闭后 ≤75s 自动熄灭。② 「CB 就绪」空转灯从全局改为**会话级**——客户端从 `sessions.list` 快照读本会话 `agentPreset` 本地判定，只在该会话本身是 codebuddy-first 时显示，活动灯（项目 pill）保持全局；host 半抽取为可测的 `createIndicatorState()` 并首获测试覆盖。测试 49→58 例 |
+| [v1.1.0](https://github.com/new-256/codebuddy-bridge/releases/tag/v1.1.0) | Desktop 0.3.5 | **双后端：WorkBuddy 接入**。`backend="workbuddy"` 把办公任务（文档/幻灯/表格、知识库、图片视频生成、微信/企微回复）派发给腾讯 WorkBuddy——CodeBuddy 的**同引擎孪生 CLI**（同一 stream-json 协议，实测逐字段兼容），登录态随桌面应用共享。**会话感知后端路由**：两 CLI 各自维护会话存储，续接时按 sessionId 自动路由回所属 CLI；结果带 `backend` 字段、状态带 `[workbuddy]` 标记；MCP 未装 WorkBuddy 时返回带安装指引的错误。测试套件扩至 49 例 |
+| [v1.0.0](https://github.com/new-256/codebuddy-bridge/releases/tag/v1.0.0) | Desktop 0.3.5 | **首个正式版本**：`codebuddy_run` / `codebuddy_continue` / `codebuddy_status` 三工具 + codebuddy 优先策略 + 受限回退弹窗 + 家级实时状态灯 + 动态形态 + 零依赖 MCP 服务器（含 `CODEBUDDY_MCP_ALLOWED_ROOTS` 白名单护栏）+ 按项目 token 用量统计（codebuddy 无套餐额度 API，以 token 计量替代）+ 指定 `model`/`effort`/`maxTurns`；`core/` 共享核心（单一事实来源 + 生成派生产物 + 同步锁定）；可靠性基线（全失败路径可用、会话感知 cwd 回落、单次弹窗、后台挂起守卫、限流判定收窄、跨 chunk 半行安全解析）由 44 例故障注入回归测试锁定，CI 语法矩阵 + 测试 + 版本三处锁死 |
 
 详见 [docs/CHANGELOG.md](docs/CHANGELOG.md)。
 

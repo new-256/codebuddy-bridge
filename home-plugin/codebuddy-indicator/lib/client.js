@@ -9,9 +9,9 @@
 //   idle     → 灰色圆点, "CB"
 //
 // 可见性（v1.1.1）：活动灯（项目 pill）全局显示；「CB 就绪」空转灯只在该会话
-// 本身处于 codebuddy-first 模式时显示——经 slot inject(sessionId) 拿到本会话
-// id，再从客户端 sessions.list 快照读取该会话的 agentPreset（preset id 即目录
-// 名 'codebuddy-first'）本地判定。快照/服务不可用时回退到端点的全局
+// 本身处于 codebuddy-first 模式时显示——新框架（≥0.3.14）经会话作用域槽位的标准
+// props（sessionId + useSessions）读本会话投影值 agentPreset；旧框架经
+// inject(sessionId) + sessions.list 快照；判定不可用时回退端点的全局
 // presetActive（心跳租约，见 host 半）。
 
 window.__ModuleLoader__.load({
@@ -141,32 +141,58 @@ window.__ModuleLoader__.load({
           react.createElement("div", { className: "cb-pop-body" }, rows)));
     }
 
-    // per-session preset 判定：sessions.list 快照（byId[sessionId].agentPreset）。
-    // UNKNOWN 哨兵必须是稳定原始值（useSyncExternalStore 的 getSnapshot 契约）。
+    // per-session preset 判定（v1.1.2 起双通道，跨 DSH 版本兼容）：
+    //  a) 框架标准 props（DSH Desktop ≥ 0.3.14 / dsh 0.1.2-alpha.5）：sessionId 与
+    //     useSessions 选择器钩子由会话作用域槽位框架注入，读
+    //     byId[sessionId].projectionValues.agentPreset（alpha.5 起 preset 字段移入投影值）；
+    //  b) 旧式注入（更早版本）：inject(sessionId) 收到会话 id + sessions 服务的
+    //     list 快照（byId[sessionId].agentPreset，旧 summary 字段）。
+    // 两条通道的读取函数同时认新旧两种 summary 形状。都不可用 → UNKNOWN →
+    // 回退端点的全局心跳租约（host 半）。
+    // UNKNOWN 哨兵必须是稳定原始值（getSnapshot 契约）。
     const PRESET_UNKNOWN = "\u0000unknown";
     const PRESET_CODEBUDDY_FIRST = "codebuddy-first";
     function subscribeNoop() { return function () { }; }
+    function presetOfSummary(sum) {
+      if (!sum) return PRESET_UNKNOWN;
+      if (sum.projectionValues && typeof sum.projectionValues.agentPreset === "string") return sum.projectionValues.agentPreset;
+      if (typeof sum.agentPreset === "string") return sum.agentPreset;
+      return PRESET_UNKNOWN;
+    }
+    function presetOfState(state, sessionId) {
+      try {
+        if (!state || !sessionId || !state.byId) return PRESET_UNKNOWN;
+        return presetOfSummary(state.byId[sessionId]);
+      } catch (e) { return PRESET_UNKNOWN; }
+    }
 
     function Indicator(props) {
-      const sessionId = props && props.sessionId;
-      const sessionsSvc = props && props.sessionsSvc;
+      const p = props || {};
+      // 标准属性（新框架）优先；老框架经 inject(sessionId) 提供 injectedSessionId。
+      const sessionId = (typeof p.sessionId === "string" && p.sessionId) || (typeof p.injectedSessionId === "string" && p.injectedSessionId) || undefined;
+      const useSess = typeof p.useSessions === "function" ? p.useSessions : null;
+      const sessionsSvc = p.sessionsSvc;
       const st = react.useState(null);
       const s = st[0];
       const setS = st[1];
       const ot = react.useState(false);
       const open = ot[0];
       const setOpen = ot[1];
-      // 本会话的 agent preset（三态：已知 'codebuddy-first' / 已知其他 / UNKNOWN）
-      const myPreset = react.useSyncExternalStore(
-        (sessionsSvc && sessionsSvc.list) ? sessionsSvc.list.subscribe : subscribeNoop,
-        function () {
-          try {
-            if (!sessionsSvc || !sessionsSvc.list) return PRESET_UNKNOWN;
-            const snap = sessionsSvc.list.getSnapshot();
-            const sum = (snap && snap.byId && sessionId) ? snap.byId[sessionId] : undefined;
-            return (sum && typeof sum.agentPreset === "string") ? sum.agentPreset : PRESET_UNKNOWN;
-          } catch (e) { return PRESET_UNKNOWN; }
-        });
+      // 本会话的 agent preset（三态：已知 'codebuddy-first' / 已知其他 / UNKNOWN）。
+      // 恰好一条钩子通道；useSessions 的有无在同一挂载期内恒定，满足 hooks 规则。
+      let myPreset;
+      if (useSess) {
+        myPreset = useSess(function (state) { return presetOfState(state, sessionId); });
+      } else {
+        myPreset = react.useSyncExternalStore(
+          (sessionsSvc && sessionsSvc.list) ? sessionsSvc.list.subscribe : subscribeNoop,
+          function () {
+            try {
+              if (!sessionsSvc || !sessionsSvc.list) return PRESET_UNKNOWN;
+              return presetOfState(sessionsSvc.list.getSnapshot(), sessionId);
+            } catch (e) { return PRESET_UNKNOWN; }
+          });
+      }
       const presetKnown = myPreset !== PRESET_UNKNOWN;
       const iAmCbFirst = presetKnown ? myPreset === PRESET_CODEBUDDY_FIRST : null;
       react.useEffect(function () {
@@ -237,7 +263,11 @@ window.__ModuleLoader__.load({
         const slots = scope.get("slots");
         if (slots === undefined) return;
         scope.slots.inject("conversation.session.header.utilities", function () {
-          return slots.register({ name: "conversation.session.header.utilities", id: "codebuddy-indicator-home", order: 50, inject: function (sessionId) { return { sessionId: sessionId, sessionsSvc: scope.get("sessions") }; } }, function (props) { return react.createElement(Indicator, props); });
+          // inject 兼容两层：新框架（≥0.3.14）以零参调用本函数、标准 props 由框架
+          // 合入（sessionId + useSessions）；旧框架以 sessionId 调用——改名
+          // injectedSessionId 避免与标准 props 冲突。sessionsSvc 两代通用（sessions
+          // 服务的 list 快照至今保留）。
+          return slots.register({ name: "conversation.session.header.utilities", id: "codebuddy-indicator-home", order: 50, inject: function (injectedSessionId) { return { injectedSessionId: injectedSessionId, sessionsSvc: scope.get("sessions") }; } }, function (props) { return react.createElement(Indicator, props); });
         });
       });
     }

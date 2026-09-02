@@ -2,6 +2,28 @@
 
 本项目遵循 [语义化版本](https://semver.org/)；版本号同步 `package.json`、Git tag 与 GitHub Release（`npm run check` 中的 `scripts/verify.mjs` 在 CI 里锁三处一致）。
 
+## [1.1.2] - 2026-09-03
+
+适配：**DSH Desktop 0.3.14 / @deepseek-ai/dsh 0.1.2-alpha.5**（本次 DSH 更新带来的客户端 API 变更修复 + 全线 DSH 版本适配标注）。
+
+### 适配
+
+- **背景**：DSH Desktop 0.3.12 起插件体系重构（插件隔离、profiles bundles 化、客户端模块系统重写）。0.3.14 / dsh 0.1.2-alpha.5 实测发现 v1.1.1 的「会话级就绪灯」判定失效——客户端会话摘要里的 `agentPreset` 字段已移入 `projectionValues` 投影值，且槽位 `inject` 的调用契约从 `inject(sessionId)` 变为零参（会话身份改由框架标准 props 提供），导致 v1.1.1 的读取永远 UNKNOWN、退回全局租约 → 空闲 codebuddy-first 标签页开着时其他会话又出现「CB 就绪」灯（v1.1.1 修复的回归）。
+- **修复（双通道，跨版本兼容）**：
+  - 优先走 **框架标准 props**（DSH ≥ 0.3.14）：会话作用域槽位向条目组件注入 `sessionId` 与 `useSessions` 选择器钩子，读 `byId[sessionId].projectionValues.agentPreset`；
+  - 回退走 **旧式注入**（更早版本）：`inject(sessionId)` 收到会话 id（改名 `injectedSessionId` 避免与标准 props 冲突）+ `sessions` 服务的 `list` 快照；
+  - 两条通道的读取函数同时认新旧两种摘要形状（`projectionValues.agentPreset` / 顶层 `agentPreset`）；都不可用时仍回退端点全局心跳租约。
+- **`dsh.compat` 元数据**：家级插件 package.json 声明 `desktop: ">=0.3.4"`、`backend: ">=0.1.2-alpha.4"`、`verified: "DSH Desktop 0.3.5 & 0.3.14 / @deepseek-ai/dsh 0.1.2-alpha.5"`（跟随 dsh-model-status 的家级插件约定）。
+- **版本适配标注**：README 中英文版版本表新增「适配 DSH」列；历史 Release 备注补标各自适配的 DSH 版本（v1.0.0 / v1.1.0 → DSH Desktop 0.3.5；v1.1.1 → 0.3.5 开发、0.3.14 实测兼容）。
+- 文档：`client-entry.mjs` 头注释更新为 0.3.14 的新扫描机制说明（client-modules 现扫描所有 Loader 行，裸名行仅为旧版兼容保留）。
+
+### 实测（DSH Desktop 0.3.14 / dsh 0.1.2-alpha.5）
+
+- host 半：`GET /codebuddy-indicator/status` 正常返回，preset 30s 心跳租约续期（`lastModeAt` 持续刷新）。
+- 客户端半：新 client-modules 花名册（combo 路由 `/plugins/??<id>/client.js&rev=<内容指纹>`）逐字节命中（sha1 复算 rev 后 HTTP 200，正文与部署文件一致）；HMR 内容指纹重建生效。
+- preset 半：codebuddy-first preset 在新进程正常 apply 并心跳。
+- 浏览器侧渲染需刷新页面（或等待客户端 HMR 热替换）后确认。
+
 ## [1.1.1] - 2026-09-02
 
 修复：非 codebuddy-first 会话里状态灯常驻不灭（两层原因，都修）。
