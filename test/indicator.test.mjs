@@ -6,7 +6,7 @@
 
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { createIndicatorState, apply } from '../home-plugin/codebuddy-indicator/lib/index.mjs'
+import { createIndicatorState, apply, normalizeMcpBridge, MCP_BRIDGE_STALE_MS } from '../home-plugin/codebuddy-indicator/lib/index.mjs'
 
 function makeState() {
   let t = 0
@@ -233,4 +233,29 @@ test('indicator: apply() 装配 —— mode/status 事件入状态机，webServe
   const parsed2 = JSON.parse(body)
   assert.equal(parsed2.state, 'running')
   assert.equal(parsed2.running, 1)
+})
+
+// ── MCP 子进程快照文件通道（v1.1.5）──────────────────────────────────────────
+
+test('normalizeMcpBridge: 新鲜快照原样通过，过期快照的 running 降级', () => {
+  const now = 1000000
+  const fresh = { source: 'mcp', pid: 42, updatedAt: now - 1000, projects: [{ cwd: 'C:\\p', running: 1, state: 'running', current: { stepIndex: 2, tool: 'Bash' } }] }
+  const a = normalizeMcpBridge(fresh, now, MCP_BRIDGE_STALE_MS)
+  assert.equal(a.stale, false)
+  assert.equal(a.projects[0].running, 1, '新鲜快照保留 running')
+  assert.equal(a.projects[0].state, 'running')
+  // 过期：子进程可能被强杀而来不及写收尾快照，不降级会让灯永久转圈
+  const stale = { source: 'mcp', pid: 42, updatedAt: now - (MCP_BRIDGE_STALE_MS + 1), projects: [{ cwd: 'C:\\p', running: 2, state: 'running', current: { stepIndex: 2, tool: 'Bash' } }] }
+  const b = normalizeMcpBridge(stale, now, MCP_BRIDGE_STALE_MS)
+  assert.equal(b.stale, true)
+  assert.equal(b.projects[0].running, 0, '过期快照的 running 必须清零')
+  assert.equal(b.projects[0].current, null)
+  assert.equal(b.projects[0].state, 'idle')
+  // 过期但已结束的项目不受影响（历史信息仍可展示）
+  const done = { updatedAt: now - (MCP_BRIDGE_STALE_MS + 1), projects: [{ cwd: 'C:\\p', running: 0, state: 'ok', lastStatus: 'SUCCESS' }] }
+  assert.equal(normalizeMcpBridge(done, now, MCP_BRIDGE_STALE_MS).projects[0].lastStatus, 'SUCCESS')
+  // 垃圾输入安全降级
+  assert.equal(normalizeMcpBridge(null, now, 1000), null)
+  assert.equal(normalizeMcpBridge({}, now, 1000).projects.length, 0)
+  assert.equal(normalizeMcpBridge({ projects: [{ running: 1 }] }, now, 1000).projects.length, 0, '无 cwd 的条目丢弃')
 })

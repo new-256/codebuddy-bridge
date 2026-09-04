@@ -38,8 +38,33 @@
 export const PRESET_TTL_MS = 75000
 export const PRESET_ID = 'codebuddy-first'
 
+// MCP 子进程快照文件（v1.1.5）。标准（非 codebuddy-first）模式下 codebuddy 经全局
+// MCP 行调用，那是**独立子进程**：没有 ctx.emit，也拿不到 codebuddyCollector 服务，
+// 所以此前家级插件收不到任何 MCP 路径数据 —— 状态灯在整个调用过程中完全不出现。
+// 现在 MCP 把快照原子写进 dsh-home/<MCP_BRIDGE_FILE>，这里在响应请求时读取合并。
+// 不走 HTTP 反推：webServer.register 不暴露端口，且端口实测会变。
+export const MCP_BRIDGE_FILE = 'codebuddy-indicator-mcp.json'
+export const MCP_BRIDGE_STALE_MS = 90000
+
 // 同时在线的 codebuddy-first 会话上限（防御异常上报导致的无界增长）。
 const MAX_SESSIONS = 64
+
+// 过期快照里仍在 running 的项目降级为已结束：子进程可能被强杀而来不及写收尾
+// 快照，否则灯会永久转圈。纯函数，便于独立测试。
+export function normalizeMcpBridge(payload, nowMs, staleMs) {
+  if (!payload || typeof payload !== 'object') return null
+  const projects = Array.isArray(payload.projects) ? payload.projects : []
+  const updatedAt = Number(payload.updatedAt) || 0
+  const stale = (Number(nowMs) || 0) - updatedAt > (Number(staleMs) || MCP_BRIDGE_STALE_MS)
+  const out = []
+  for (const p of projects) {
+    if (!p || !p.cwd) continue
+    if (stale && (Number(p.running) || 0) > 0) {
+      out.push(Object.assign({}, p, { running: 0, current: null, state: p.state === 'running' ? 'idle' : p.state }))
+    } else out.push(p)
+  }
+  return { source: 'mcp', updatedAt: updatedAt, stale: stale, projects: out }
+}
 
 // 可独立于 Cordis 测试的纯状态机：注入 now（时钟）、ttlMs（租约时长）与
 // listPresetSessions（实时枚举器，返回 codebuddy-first 会话 id 数组）即可。
@@ -205,6 +230,48 @@ export function apply(ctx) {
     ctx.provide('codebuddyCollector', { mergeSnapshot: st.mergeSnapshot })
   } catch (e) { }
 
+  // MCP 子进程快照文件的读取端。dsh-home 从本模块位置推导：
+  // <dsh-home>/plugins/codebuddy-indicator/lib/index.mjs → 上溯三级目录。
+  // 读取在响应请求时进行（客户端本就在轮询，天然限频），失败一律忽略。
+  function builtin(name) {
+    try {
+      return (globalThis.process && typeof globalThis.process.getBuiltinModule === 'function')
+        ? globalThis.process.getBuiltinModule(name)
+        : null
+    } catch (e) { return null }
+  }
+  const nodeFs = builtin('node:fs')
+  const nodePath = builtin('node:path')
+  const nodeUrl = builtin('node:url')
+
+  let bridgePath = null
+  try {
+    const envDir = globalThis.process && globalThis.process.env
+      ? (globalThis.process.env.CODEBUDDY_INDICATOR_DIR || globalThis.process.env.DSH_HOME)
+      : null
+    if (envDir && nodePath) {
+      bridgePath = nodePath.join(envDir, MCP_BRIDGE_FILE)
+    } else if (nodePath && nodeUrl && import.meta.url) {
+      const libDir = nodePath.dirname(nodeUrl.fileURLToPath(import.meta.url))     // .../lib
+      const home = nodePath.resolve(libDir, '..', '..', '..')                     // dsh-home
+      bridgePath = nodePath.join(home, MCP_BRIDGE_FILE)
+    }
+  } catch (e) { bridgePath = null }
+
+  let lastBridgeStamp = 0
+  function ingestMcpBridge() {
+    if (!bridgePath || !nodeFs) return
+    try {
+      const stamp = Number(nodeFs.statSync(bridgePath).mtimeMs) || 0
+      // 未变更就不重复合并：mergeSnapshot 会把缺失的 updatedAt 补成 now，重复
+      // 合并会让过期数据一直显得很新，从而绕过快照的过期判定。
+      if (stamp === lastBridgeStamp) return
+      const norm = normalizeMcpBridge(JSON.parse(nodeFs.readFileSync(bridgePath, 'utf8')), Date.now(), MCP_BRIDGE_STALE_MS)
+      if (norm && norm.projects.length) st.mergeSnapshot(norm)
+      lastBridgeStamp = stamp
+    } catch (e) { }
+  }
+
   if (typeof ctx.inject === 'function') {
     ctx.inject(['webServer'], (webCtx) => {
       const ws = webCtx.get('webServer')
@@ -214,6 +281,7 @@ export function apply(ctx) {
         path: '/codebuddy-indicator/status',
         handler: (req, res) => {
           try {
+            ingestMcpBridge()
             const body = JSON.stringify(st.snapshot())
             res.writeHead(200, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' })
             res.end(body)

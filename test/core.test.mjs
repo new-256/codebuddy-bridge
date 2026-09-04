@@ -8,7 +8,7 @@ import assert from 'node:assert/strict'
 import {
   isLimited, clampInt, shortLabel, summarizeArgs, parseCodebuddyJson, buildResult,
   buildArgv, fallbackResult, createLineStream, createStatusEngine, renderResult, renderStatus,
-  isTransientCliError, failureHint
+  isTransientCliError, failureHint, buildMcpBridgePayload, normalizeMcpBridge, MCP_BRIDGE_FILE
 } from '../core/codebuddy-core.mjs'
 
 // ── clampInt / shortLabel / summarizeArgs ────────────────────────────────────
@@ -399,5 +399,69 @@ test('renderResult / renderStatus 产出无损文本', () => {
   const fb = renderResult({ fallback: true, reason: 'ERROR' })
   assert.ok(fb[0].text.includes('回退') && fb[0].text.includes('ERROR'))
   const st = renderStatus({ state: 'ok', running: 0, projects: [{ cwd: '/p/a', name: 'a', state: 'ok', running: 0, current: null, trail: [], lastStatus: 'SUCCESS', lastAt: 1, lastSessionId: 's1', runs: 2, totalTokens: 15, updatedAt: 1 }], runs: 2, totalTokens: 15 })
-  assert.ok(st[0].text.includes('Σ 2 runs · 15 tokens'))
+  assert.ok(st[0].text.includes('total 2 runs, 15 tokens'))
+})
+
+// ── MCP → 家级插件快照文件通道（v1.1.5）─────────────────────────────────────
+
+test('buildMcpBridgePayload: 收窄为可无损 JSON 化的叶子字段', () => {
+  const snap = {
+    state: 'running', running: 1,
+    projects: [{
+      cwd: 'C:\\proj', name: 'proj', state: 'running', running: 1,
+      current: { stepIndex: 3, tool: 'Bash', args: { command: 'ls' } },
+      trail: [{ stepIndex: 1, tool: 'Read', state: 'done', args: null }],
+      lastStatus: 'SUCCESS', lastAt: 5, lastSessionId: 's1', lastBackend: 'codebuddy',
+      fallbackActive: false, runs: 2, totalTokens: 100, updatedAt: 7
+    }]
+  }
+  const p = buildMcpBridgePayload(snap, 4242, 999)
+  assert.equal(p.source, 'mcp')
+  assert.equal(p.pid, 4242)
+  assert.equal(p.updatedAt, 999)
+  assert.equal(p.projects[0].cwd, 'C:\\proj')
+  assert.equal(p.projects[0].current.tool, 'Bash')
+  assert.equal(p.projects[0].runs, 2)
+  // 必须能无损 JSON 往返（要写文件）
+  assert.deepEqual(JSON.parse(JSON.stringify(p)), p)
+  // 无 cwd 的条目丢弃；空输入安全
+  assert.equal(buildMcpBridgePayload({ projects: [{ running: 1 }] }, 1, 1).projects.length, 0)
+  assert.equal(buildMcpBridgePayload(null, 0, 0).projects.length, 0)
+  assert.equal(MCP_BRIDGE_FILE, 'codebuddy-indicator-mcp.json')
+})
+
+test('renderStatus: 合计记号为纯 ASCII（不再用希腊字母 Σ）', () => {
+  const txt = renderStatus({
+    state: 'ok', running: 0, runs: 3, totalTokens: 120,
+    projects: [{ cwd: 'C:\\p', name: 'p', state: 'ok', running: 0, runs: 3, totalTokens: 120, trail: [] }]
+  })[0].text
+  assert.ok(!/[\u0370-\u03FF]/.test(txt), '输出不得含希腊字母：' + txt)
+  assert.match(txt, /total 3 runs, 120 tokens/)
+})
+
+test('createLineStream: 非字符串 chunk 静默丢弃（v1.1.5 回归护栏）', () => {
+  // 这条契约曾让 MCP 路径的活动明细全空：child.stdout 未声明编码时 'data' 派发
+  // 的是 Buffer，pushChunk 收到非字符串直接 return，foldEvent 于是从不触发。
+  // 行为本身是有意的（防御非法输入），但调用方必须自己保证喂字符串。
+  let n = 0
+  const s = createLineStream(() => { n++ })
+  s.pushChunk(Buffer.from('{"type":"assistant"}\n'))
+  assert.equal(n, 0, 'Buffer 被丢弃 —— 调用方必须先 setEncoding(utf8)')
+  s.pushChunk('{"type":"assistant"}\n')
+  assert.equal(n, 1, '字符串正常消费')
+  // 半行安全：跨 chunk 的行必须拼接后才消费一次
+  const seen = []
+  const s2 = createLineStream((ln) => seen.push(ln))
+  s2.pushChunk('{"a":')
+  assert.deepEqual(seen, [], '半行不得提前消费')
+  s2.pushChunk('1}\n')
+  assert.deepEqual(seen, ['{"a":1}'])
+})
+
+test('MCP 源码契约：child.stdout 必须声明 utf8 编码', async () => {
+  // 静默失败模式，值得用源码断言钉住：一旦有人删掉 setEncoding，活动明细会再次
+  // 全空，而所有功能测试仍会通过（result 事件是从累积的 out 字符串解析的）。
+  const { readFileSync } = await import('node:fs')
+  const src = readFileSync(new URL('../mcp/codebuddy-mcp-server.mjs', import.meta.url), 'utf8')
+  assert.match(src, /child\.stdout\.setEncoding\('utf8'\)/, 'MCP 必须给 child.stdout 设 utf8 编码')
 })

@@ -70,7 +70,7 @@ test('协议握手 + 工具列表', async () => {
   const { child, client, init } = await startServer({})
   try {
     assert.equal(init.result.serverInfo.name, 'codebuddy-mcp-server')
-    assert.equal(init.result.serverInfo.version, '1.1.4')
+    assert.equal(init.result.serverInfo.version, '1.1.5')
     const tools = await client.request('tools/list', {})
     assert.deepEqual(tools.result.tools.map((t) => t.name).sort(), ['codebuddy_continue', 'codebuddy_run', 'codebuddy_status'])
     const ping = await client.request('ping', {})
@@ -94,7 +94,7 @@ test('成功运行：tokens/session 正确 + 按项目用量统计', async () =>
     // 实时折叠 + 用量统计
     const status = await client.request('tools/call', { name: 'codebuddy_status', arguments: {} })
     const st = status.result.content[0].text
-    assert.ok(st.includes('Σ 1 runs · 15 tokens'), st)
+    assert.ok(st.includes('total 1 runs, 15 tokens'), st)
     assert.ok(st.includes('fake-s1'.slice(0, 8)))
   } finally {
     client.close()

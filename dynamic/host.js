@@ -32,6 +32,66 @@ const MAX_ARG_LEN = 120
 const MAX_PROJECTS = 12
 const MAX_SESSIONS = 256
 
+// MCP 子进程 → 家级插件的快照文件通道（v1.1.5）。
+//
+// 为什么要文件：codebuddy 在标准（非 codebuddy-first）模式下经**全局 MCP 行**调用，
+// 而 MCP 服务器是独立子进程，自己 createStatusEngine，既没有 ctx.emit 也拿不到
+// codebuddyCollector 服务 —— 所以家级插件从来收不到 MCP 路径的运行数据，标题栏
+// 状态灯在整个调用过程中完全不出现（v1.1.4 及以前）。
+// 为什么不走 HTTP 反推：webServer.register 不暴露端口（客户端能工作是因为同源
+// 相对 URL），子进程无从发现端口；且端口实测会变（49301 → 58199）。
+// 文件通道两端都只需从自身模块位置推导 dsh-home，无需端口、无需服务。
+const MCP_BRIDGE_FILE = 'codebuddy-indicator-mcp.json'
+
+// 快照被认为「新鲜」的时长。超时后仍在 running 的项目按「进程已死」处理：
+// 子进程可能被强杀而来不及写收尾快照，否则灯会永久转圈。
+const MCP_BRIDGE_STALE_MS = 90000
+
+// 把 engine.statusSnapshot() 收窄成可无损 JSON 化的上报载荷（只取叶子字段）。
+function buildMcpBridgePayload(snap, pid, nowMs) {
+  const s = snap && typeof snap === 'object' ? snap : {}
+  const src = Array.isArray(s.projects) ? s.projects : []
+  const projects = []
+  for (const p of src) {
+    if (!p || !p.cwd) continue
+    projects.push({
+      cwd: String(p.cwd),
+      name: p.name ? String(p.name) : '',
+      state: p.state ? String(p.state) : 'idle',
+      running: Number(p.running) || 0,
+      current: p.current ? { stepIndex: Number(p.current.stepIndex) || 0, tool: String(p.current.tool || ''), args: p.current.args || null } : null,
+      trail: Array.isArray(p.trail) ? p.trail.slice(-MAX_TRAIL).map(function (e) {
+        return { stepIndex: Number(e && e.stepIndex) || 0, tool: String((e && e.tool) || ''), state: String((e && e.state) || ''), args: (e && e.args) || null }
+      }) : [],
+      lastStatus: p.lastStatus ? String(p.lastStatus) : null,
+      lastAt: Number(p.lastAt) || 0,
+      lastSessionId: p.lastSessionId ? String(p.lastSessionId) : null,
+      lastBackend: p.lastBackend ? String(p.lastBackend) : null,
+      fallbackActive: !!p.fallbackActive,
+      runs: Number(p.runs) || 0,
+      totalTokens: Number(p.totalTokens) || 0,
+      updatedAt: Number(p.updatedAt) || 0
+    })
+  }
+  return { source: 'mcp', pid: Number(pid) || 0, updatedAt: Number(nowMs) || 0, projects: projects }
+}
+
+// 读侧校验：过期快照里仍在 running 的项目降级为已结束（进程可能被强杀）。
+function normalizeMcpBridge(payload, nowMs, staleMs) {
+  if (!payload || typeof payload !== 'object') return null
+  const projects = Array.isArray(payload.projects) ? payload.projects : []
+  const updatedAt = Number(payload.updatedAt) || 0
+  const stale = (Number(nowMs) || 0) - updatedAt > (Number(staleMs) || MCP_BRIDGE_STALE_MS)
+  const out = []
+  for (const p of projects) {
+    if (!p || !p.cwd) continue
+    if (stale && (Number(p.running) || 0) > 0) {
+      out.push(Object.assign({}, p, { running: 0, current: null, state: p.state === 'running' ? 'idle' : p.state }))
+    } else out.push(p)
+  }
+  return { source: 'mcp', pid: Number(payload.pid) || 0, updatedAt: updatedAt, stale: stale, projects: out }
+}
+
 // ── 纯函数 ────────────────────────────────────────────────────────────────────
 
 function isLimited(res) {
@@ -415,12 +475,12 @@ function renderResult(value) {
 function renderStatus(value) {
   const v = value || {}
   const lines = []
-  lines.push('codebuddy status: ' + v.state + (v.running > 0 ? ' (' + v.running + ' running)' : '') + (v.projects && v.projects.length > 1 ? ' across ' + v.projects.length + ' projects' : '') + (v.totalTokens ? ' | Σ ' + v.runs + ' runs · ' + v.totalTokens + ' tokens' : ''))
+  lines.push('codebuddy status: ' + v.state + (v.running > 0 ? ' (' + v.running + ' running)' : '') + (v.projects && v.projects.length > 1 ? ' across ' + v.projects.length + ' projects' : '') + (v.totalTokens ? ' | total ' + v.runs + ' runs, ' + v.totalTokens + ' tokens' : ''))
   const projList = (v.projects && v.projects.length) ? v.projects : null
   if (projList) {
     for (const p of projList) {
       const cur = p.current ? (' step ' + p.current.stepIndex + ' → ' + p.current.tool + (p.current.args ? ' ' + JSON.stringify(p.current.args) : '')) : (p.running > 0 ? ' (starting / thinking)' : '')
-      const usage = (p.runs ? ' | Σ ' + p.runs + ' runs · ' + (p.totalTokens || 0) + ' tokens' : '')
+      const usage = (p.runs ? ' | total ' + p.runs + ' runs, ' + (p.totalTokens || 0) + ' tokens' : '')
       const bkTag = (p.lastBackend && p.lastBackend !== 'codebuddy') ? ' [' + p.lastBackend + ']' : ''
       lines.push('· ' + p.name + ' [' + p.state + (p.running > 0 ? ' ×' + p.running : '') + ']' + bkTag + cur + (p.lastStatus ? ' | last=' + p.lastStatus + (p.lastSessionId ? ' ' + p.lastSessionId.slice(0, 8) : '') : '') + usage)
       if (p.trail && p.trail.length) {

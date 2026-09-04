@@ -30,14 +30,16 @@
 // (backwards compatible; intended for single-user local setups).
 
 import { spawn } from 'node:child_process'
-import { resolve as resolvePath } from 'node:path'
-import { existsSync } from 'node:fs'
+import { resolve as resolvePath, dirname, join as joinPath } from 'node:path'
+import { existsSync, writeFileSync, renameSync, mkdirSync } from 'node:fs'
+import { fileURLToPath } from 'node:url'
 import {
-  isLimited, isTransientCliError, failureHint, parseCodebuddyJson, buildResult, buildArgv, createLineStream, createStatusEngine
+  isLimited, isTransientCliError, failureHint, parseCodebuddyJson, buildResult, buildArgv, createLineStream, createStatusEngine,
+  buildMcpBridgePayload, MCP_BRIDGE_FILE
 } from '../core/codebuddy-core.mjs'
 
 const NAME = 'codebuddy-mcp-server'
-const VERSION = '1.1.4'
+const VERSION = '1.1.5'
 const PROTOCOL = '2024-11-05'
 
 // Default cwd for codebuddy calls that do not pass one (override: CODEBUDDY_MCP_CWD).
@@ -96,7 +98,41 @@ function cwdBlockedReason(cwd) {
 }
 
 // ── status engine (shared with DSH forms) ────────────────────────────────────
-const engine = createStatusEngine(null)
+//
+// 状态灯通道（v1.1.5）：本进程是独立子进程，没有 ctx.emit、也拿不到家级插件的
+// codebuddyCollector 服务，所以把每次状态变化原子写入 dsh-home 下的快照文件，由
+// 家级插件在响应 /codebuddy-indicator/status 时读取合并。此前 publish 传 null，
+// 标准模式（走全局 MCP 行）的运行过程对状态灯完全不可见。
+//
+// dsh-home 定位顺序：显式环境变量 → 部署位置（dsh-home/bin/ 的上一级）→ 关闭通道。
+// 仓库内直接运行（mcp/ 目录）不写文件，避免往仓库里落状态。
+function resolveBridgePath() {
+  const explicit = process.env.CODEBUDDY_INDICATOR_DIR || process.env.DSH_HOME
+  if (explicit) return joinPath(explicit, MCP_BRIDGE_FILE)
+  try {
+    const selfDir = dirname(fileURLToPath(import.meta.url))
+    // 部署形态：<dsh-home>/bin/codebuddy-mcp-server.mjs
+    if (/[\\/]bin$/.test(selfDir)) return joinPath(dirname(selfDir), MCP_BRIDGE_FILE)
+  } catch (e) { }
+  return null
+}
+
+const BRIDGE_PATH = resolveBridgePath()
+
+// 原子写：先写临时文件再 rename，避免家级插件读到半截 JSON。
+// 任何失败都静默忽略——状态灯是附加信息，绝不能影响工具本身。
+function publishSnapshot(snap) {
+  if (!BRIDGE_PATH) return
+  try {
+    const payload = buildMcpBridgePayload(snap, process.pid, Date.now())
+    const tmp = BRIDGE_PATH + '.' + process.pid + '.tmp'
+    try { mkdirSync(dirname(BRIDGE_PATH), { recursive: true }) } catch (e) { }
+    writeFileSync(tmp, JSON.stringify(payload), 'utf8')
+    renameSync(tmp, BRIDGE_PATH)
+  } catch (e) { }
+}
+
+const engine = createStatusEngine({ publish: publishSnapshot })
 
 // ── run orchestration ────────────────────────────────────────────────────────
 function runCodebuddy(args) {
@@ -150,6 +186,13 @@ function runCodebuddy(args) {
         engine.foldEvent(obj, cwd)
       } catch {}
     })
+    // stdout 必须声明 utf8 编码：不声明时 'data' 派发的是 Buffer，而
+    // createLineStream.pushChunk 只接受字符串（非字符串静默 return）——于是
+    // foldEvent 从不触发，状态灯拿不到 current/trail（活动明细全空）。
+    // 用 setEncoding 而非 String(d)：后者会在多字节 UTF-8 字符跨 chunk 边界时
+    // 产生乱码，setEncoding 由 Node 的 StringDecoder 正确处理半个字符。
+    child.stdout.setEncoding('utf8')
+    child.stderr.setEncoding('utf8')
     child.stdout.on('data', (d) => {
       out += d
       if (out.length > 4_000_000) out = out.slice(-2_000_000)
@@ -218,11 +261,11 @@ function statusText(filterCwd) {
     if (first) g = first
   }
   const lines = []
-  lines.push('codebuddy status: ' + g.state + (g.running > 0 ? ' (' + g.running + ' running)' : '') + (projects.length > 1 ? ' across ' + projects.length + ' projects' : '') + (g.totalTokens ? ' | Σ ' + g.runs + ' runs · ' + g.totalTokens + ' tokens' : ''))
+  lines.push('codebuddy status: ' + g.state + (g.running > 0 ? ' (' + g.running + ' running)' : '') + (projects.length > 1 ? ' across ' + projects.length + ' projects' : '') + (g.totalTokens ? ' | total ' + g.runs + ' runs, ' + g.totalTokens + ' tokens' : ''))
   if (projects.length) {
     for (const p of projects) {
       const cur = p.current ? (' step ' + p.current.stepIndex + ' → ' + p.current.tool + (p.current.args ? ' ' + JSON.stringify(p.current.args) : '')) : (p.running > 0 ? ' (starting / thinking)' : '')
-      const usage = (p.runs ? ' | Σ ' + p.runs + ' runs · ' + (p.totalTokens || 0) + ' tokens' : '')
+      const usage = (p.runs ? ' | total ' + p.runs + ' runs, ' + (p.totalTokens || 0) + ' tokens' : '')
       const bkTag = (p.lastBackend && p.lastBackend !== 'codebuddy') ? ' [' + p.lastBackend + ']' : ''
       lines.push('· ' + p.name + ' [' + p.state + (p.running > 0 ? ' ×' + p.running : '') + ']' + bkTag + cur + (p.lastStatus ? ' | last=' + p.lastStatus + (p.lastSessionId ? ' ' + p.lastSessionId.slice(0, 8) : '') : '') + usage)
       if (p.trail && p.trail.length) {

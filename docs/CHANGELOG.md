@@ -2,6 +2,29 @@
 
 本项目遵循 [语义化版本](https://semver.org/)；版本号同步 `package.json`、Git tag 与 GitHub Release（`npm run check` 中的 `scripts/verify.mjs` 在 CI 里锁三处一致）。
 
+## [1.1.5] - 2026-09-04
+
+修复：① 状态灯在标准模式下**整个调用过程完全不出现**；② 状态输出里混入希腊字母 `Σ`。
+
+### 修复
+
+- **① 状态灯对标准模式完全失明（架构缺口）**：标准（非 codebuddy-first）模式下 codebuddy 经**全局 MCP 行**调用，而 MCP 服务器是**独立子进程** —— 它既没有 `ctx.emit`，也拿不到家级插件 `ctx.provide` 的 `codebuddyCollector` 服务，`createStatusEngine(null)` 更是直接把 publish 关掉了。结果家级插件从来收不到 MCP 路径的任何运行数据，标题栏状态灯在整个调用过程中不出现。
+  修复：新增 **文件通道**。MCP 每次状态变化把快照**原子写入**（临时文件 + rename，避免读到半截 JSON）`<dsh-home>/codebuddy-indicator-mcp.json`，家级插件在响应 `/codebuddy-indicator/status` 时读取合并。两端都只从自身模块位置推导 dsh-home，**不需要端口**。
+  为什么不用 HTTP 反推：`webServer.register` 不暴露端口（客户端能工作是因为同源相对 URL），子进程无从发现；且端口实测会变（49301 → 58199）。
+- **② 活动明细永远为空（静默失败）**：修好通道后发现 `current`/`trail` 仍全空。根因是 `child.stdout` **未声明编码** —— `'data'` 事件派发的是 `Buffer`，而 `createLineStream.pushChunk` 只接受字符串（非字符串静默 `return`），于是 `engine.foldEvent` 从不触发。这个失败完全无声：`result` 事件是从累积的 `out` 字符串解析的，所以 tokens、session、状态全都正常，只有实时明细缺失。
+  修复：`child.stdout.setEncoding('utf8')`（stderr 同样处理）。用 `setEncoding` 而非 `String(d)`：后者会在多字节 UTF-8 字符跨 chunk 边界时产生乱码，`setEncoding` 由 Node 的 `StringDecoder` 正确处理半个字符。
+- **过期保护**：快照带 `updatedAt` 与 `pid`；超过 90s 未更新且仍标记 running 的项目按「进程已死」降级（子进程可能被强杀而来不及写收尾快照），否则灯会永久转圈。读取端还按文件 mtime 去重，避免重复合并把过期数据一直刷新成「很新」而绕过过期判定。
+- **③ 状态输出改为纯 ASCII**：`renderStatus` 此前用希腊字母 `Σ`（U+03A3）当合计记号，输出形如 `codebuddy status: failed | Σ 1 runs · 25268 tokens` —— 在中英文语境里都是异类字符。改为 `total 1 runs, 15 tokens`。（`·`、`×` 等中文排版合法符号保留。）
+
+### 实测（DSH Desktop 0.3.14 / 真实 MCP 路径）
+
+- 修复前：整段调用期间端点恒为 `projects: []`。
+- 修复后：`state=running` 全程可见，活动明细逐步推进 —— 端点实测到 `cur=Bash#6`、`typing#0`，trail 由 1 增至 12，结束后转 `ok`。
+
+### 测试
+
+- 测试 68→73 例：快照载荷收窄与 JSON 无损往返、过期快照的 running 降级（含已结束项目不受影响、无 `cwd` 条目丢弃）、`createLineStream` 对非字符串 chunk 的丢弃契约与半行拼接、MCP 源码断言 `child.stdout.setEncoding('utf8')` 必须存在（静默失败模式，用源码契约钉住防回归）、状态输出不含希腊字母。
+
 ## [1.1.4] - 2026-09-04
 
 修复：标准模式下调用不顺畅 —— CLI 瞬时错误既不重试也不给原因，调用方只能白耗回合靠猜。
