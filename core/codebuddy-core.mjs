@@ -32,6 +32,33 @@ export function isLimited(res) {
   return LIMIT_RE.test(hay)
 }
 
+// CLI 侧瞬时错误（v1.1.4）：codebuddy 自己的 result 事件报 subtype=error_during_execution
+// 一类失败 —— CLI/服务端跑一半崩了，且**不带任何原因**（result/stderr 全空）。
+// 实测同一任务同一默认模型（hy4-preview）重跑即成功，所以这是瞬时故障而非配置问题。
+// 与 isLimited 区分：限流/网络类要问用户（可能是额度耗尽，重试无意义且烧钱），
+// 这类则重试一次就大概率过，不值得打断用户。
+export function isTransientCliError(res) {
+  if (!res || res.ok) return false
+  if (isLimited(res)) return false
+  return res.status === 'ERROR_DURING_EXECUTION'
+}
+
+// 失败结果的可行动指引（v1.1.4）。此前失败只回一行 head（status/mode/tokens），
+// 没有 body、没有指引：模型无从判断该重试、该换模型还是该放弃，实测会白耗一次
+// codebuddy_status 再靠猜换模型。这里按失败类型给出明确下一步。
+export function failureHint(res) {
+  if (!res || res.ok) return ''
+  if (isTransientCliError(res)) {
+    return res.retried
+      ? '[诊断] codebuddy CLI 侧瞬时错误（error_during_execution，CLI 未给出原因），已自动重试 1 次仍失败。可换 model 再试一次；若仍失败请改用原生工具完成，或告知用户。'
+      : '[诊断] codebuddy CLI 侧瞬时错误（error_during_execution，CLI 未给出原因）。直接重试同一请求通常即可通过；也可显式指定 model。不要据此认为任务本身有问题。'
+  }
+  if (res.status === 'PARSE_ERROR') {
+    return '[诊断] 未能从 codebuddy 输出解析出 result 事件（进程可能被中断或输出被截断）。可重试；持续出现请检查 codebuddy CLI 版本。'
+  }
+  return ''
+}
+
 export function clampInt(v, def, min, max) {
   const n = Number(v)
   if (!Number.isFinite(n)) return def
@@ -87,6 +114,16 @@ export function buildResult(parsed, outcome, mode, stderrText, stdoutText, backe
   const stderr = (stderrText ? String(stderrText).slice(-2000) : '') + (errText ? (stderrText ? ' ' : '') + errText : '')
   if (parsed && parsed.type === 'result') {
     const isOk = exitCode === 0 && parsed.is_error === false && parsed.subtype === 'success'
+    // 实际使用的模型（v1.1.4）：result 事件的 modelUsage 是 { <model>: {...} } 映射。
+    // 只取键名（字符串），不保留其下的实时对象。此前结果不含模型信息，用户排查
+    // 「默认模型是不是不稳」只能靠猜着换 model 试。
+    let modelUsed = null
+    try {
+      if (parsed.modelUsage && typeof parsed.modelUsage === 'object') {
+        const names = Object.keys(parsed.modelUsage)
+        if (names.length) modelUsed = names.join('+')
+      }
+    } catch (e) { }
     return {
       ok: isOk,
       status: String(parsed.subtype || (isOk ? 'SUCCESS' : 'ERROR')).toUpperCase(),
@@ -99,6 +136,7 @@ export function buildResult(parsed, outcome, mode, stderrText, stdoutText, backe
       exitCode: exitCode,
       mode: mode,
       backend: bk,
+      modelUsed: modelUsed,
       stderr: stderr
     }
   }
@@ -358,8 +396,10 @@ export function renderResult(value) {
   if (v.fallback) {
     return [{ type: 'text', text: bk + ' 回退：用户选择使用 DSH 本地 API 配置（原因 ' + v.reason + '）。请改用原生工具/本地模型完成本任务，不要再调 ' + bk + '。' }]
   }
-  const head = bk + ' ' + (v.ok ? 'OK' : 'FAILED') + ' [status=' + v.status + ' mode=' + v.mode + (v.sessionId ? ' session=' + v.sessionId : '') + (v.totalTokens != null ? ' tokens=' + v.totalTokens : '') + (v.durationSeconds != null ? ' ' + v.durationSeconds + 's' : '') + ']'
-  const body = v.response ? v.response : (v.stderr ? '[stderr] ' + v.stderr : (v.rawStdout ? '[raw] ' + v.rawStdout : ''))
+  const head = bk + ' ' + (v.ok ? 'OK' : 'FAILED') + ' [status=' + v.status + ' mode=' + v.mode + (v.modelUsed ? ' model=' + v.modelUsed : '') + (v.retried ? ' retried=1' : '') + (v.sessionId ? ' session=' + v.sessionId : '') + (v.totalTokens != null ? ' tokens=' + v.totalTokens : '') + (v.durationSeconds != null ? ' ' + v.durationSeconds + 's' : '') + ']'
+  const hint = failureHint(v)
+  let body = v.response ? v.response : (v.stderr ? '[stderr] ' + v.stderr : (v.rawStdout ? '[raw] ' + v.rawStdout : ''))
+  if (hint) body = (body ? body + '\n\n' : '') + hint
   return [{ type: 'text', text: head + (body ? '\n\n' + body : '') }]
 }
 
@@ -583,6 +623,7 @@ export function createRunner(o) {
     engine.begin(cwd)
     try {
       let attempt = 0
+      let cliRetried = false
       let res
       while (true) {
         attempt += 1
@@ -592,7 +633,17 @@ export function createRunner(o) {
           break
         }
         res = buildResult(parseCodebuddyJson(r.stdoutText), r.outcome, built.mode, r.stderrText, r.stdoutText, backend)
-        if (res.ok || !isLimited(res)) break
+        if (res.ok) break
+        // CLI 侧瞬时错误（error_during_execution，CLI 不给原因）：静默自动重试一次
+        // 后再交还结果。实测同一请求重跑即过；此前把这行无原因失败原样交给模型，
+        // 模型只能白耗一次 status 再靠猜换模型。计数独立于 attempt，避免占用下面
+        // 限流弹窗的重试额度。
+        if (isTransientCliError(res)) {
+          if (!cliRetried) { cliRetried = true; attempt -= 1; continue }
+          res.retried = true
+          break
+        }
+        if (!isLimited(res)) break
         // 限流/网络类失败：每次失败弹一次三选一；「重试」仅在还有次数时提供。
         // （不再有循环外的第二次弹窗 —— 修复旧版「双弹窗 + 死选项」。）
         const decision = await askFallback(exec, res, attempt < 2)

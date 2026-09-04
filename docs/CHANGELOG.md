@@ -2,6 +2,38 @@
 
 本项目遵循 [语义化版本](https://semver.org/)；版本号同步 `package.json`、Git tag 与 GitHub Release（`npm run check` 中的 `scripts/verify.mjs` 在 CI 里锁三处一致）。
 
+## [1.1.4] - 2026-09-04
+
+修复：标准模式下调用不顺畅 —— CLI 瞬时错误既不重试也不给原因，调用方只能白耗回合靠猜。
+
+### 背景（实际会话记录）
+
+标准（非 codebuddy-first）模式下下发一个 FizzBuzz 冒烟测试任务，第一次 `codebuddy_run` 失败，工具**只回了一行**：
+
+```
+codebuddy FAILED [status=ERROR_DURING_EXECUTION mode=bypassPermissions session=1f70715d… tokens=25268 29.154s]
+```
+
+没有原因、没有指引。调用方于是白耗一次 `codebuddy_status`（同样只有一行状态），再靠**猜**显式指定 `model=glm-5.3` 才成功。复现验证：同一任务、同一默认模型（`hy4-preview`）重跑 39s 直接成功 —— 说明 `ERROR_DURING_EXECUTION` 是 **CLI/服务端瞬时故障**，不是默认模型坏了、也不是任务本身有问题。
+
+### 修复
+
+- **瞬时错误自动重试一次**：新增 `isTransientCliError()` 识别 CLI 自报的 `error_during_execution`，preset 与 MCP 两条路径都会静默重试一次后再交还结果（不打断用户）。与限流/网络类失败明确分流：后者可能是额度耗尽，重试纯烧钱，仍走原有「问用户」弹窗；瞬时错误则重试一次大概率就过。续接类调用（`--resume` / `--continue`）不自动重试，避免会话状态已被前一次改动。
+- **失败必带可行动指引**：新增 `failureHint()`，失败结果不再只有一行 head。瞬时错误明确告知「直接重试同一请求通常即可通过，不要据此认为任务有问题」；已自动重试过则改口径提示换 `model` 或改用原生工具；`PARSE_ERROR` 提示输出被截断 / 进程被中断。
+- **结果记录实际使用的模型**：`buildResult()` 从 result 事件的 `modelUsage` 提取模型名（只取键名字符串，不把其下对象带进结果，保持通道可无损 JSON 化），head 里输出 `model=…`；自动重试过的结果额外标 `retried=1`。此前结果完全不含模型信息，排查「默认模型是否不稳」只能靠猜着换 `model` 试 —— 用户那次正是这样才蒙对。
+
+修复后同一失败形态的输出：
+
+```
+codebuddy FAILED [status=ERROR_DURING_EXECUTION mode=bypassPermissions model=hy4-preview retried=1 session=1f70715d… tokens=25268 29.154s]
+
+[诊断] codebuddy CLI 侧瞬时错误（error_during_execution，CLI 未给出原因），已自动重试 1 次仍失败。可换 model 再试一次；若仍失败请改用原生工具完成，或告知用户。
+```
+
+### 测试
+
+- 测试 66→68 例：瞬时错误识别与限流优先级（`ERROR_DURING_EXECUTION` + 429 判为限流，不走静默重试）、其他失败态不误判、三类指引文案、`modelUsage` 提取与 JSON 可序列化、head 的 `model=` / `retried=1` 输出、无 `modelUsage` 时不影响渲染。
+
 ## [1.1.3] - 2026-09-03
 
 修复：① 计划模式下 codebuddy 的 Bash 被门禁拦死（「无交互模式下未获授权」）；② 状态灯的会话判定改用自有权威通道，不再随 DSH 客户端 API 漂移。

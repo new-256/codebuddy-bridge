@@ -7,7 +7,8 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 import {
   isLimited, clampInt, shortLabel, summarizeArgs, parseCodebuddyJson, buildResult,
-  buildArgv, fallbackResult, createLineStream, createStatusEngine, renderResult, renderStatus
+  buildArgv, fallbackResult, createLineStream, createStatusEngine, renderResult, renderStatus,
+  isTransientCliError, failureHint
 } from '../core/codebuddy-core.mjs'
 
 // ── clampInt / shortLabel / summarizeArgs ────────────────────────────────────
@@ -129,6 +130,50 @@ test('buildArgv: plan 模式预批 Bash（v1.1.3）—— 非交互下只读 she
 })
 
 // ── isLimited（词边界 + 匹配面收窄）────────────────────────────
+
+test('isTransientCliError / failureHint（v1.1.4）—— CLI 瞬时错误可自动重试且自带指引', () => {
+  // codebuddy 自己报 error_during_execution，且不给任何原因（result/stderr 全空）
+  const t = { ok: false, status: 'ERROR_DURING_EXECUTION', response: '', stderr: '' }
+  assert.equal(isTransientCliError(t), true)
+  assert.match(failureHint(t), /直接重试同一请求/)
+  // 已自动重试过 → 指引改口径，提示换 model 或改用原生工具
+  assert.match(failureHint({ ...t, retried: true }), /已自动重试 1 次仍失败/)
+  // 成功结果没有指引
+  assert.equal(isTransientCliError({ ok: true, status: 'SUCCESS' }), false)
+  assert.equal(failureHint({ ok: true, status: 'SUCCESS' }), '')
+  // 限流类不归瞬时错误（要问用户，重试可能纯烧钱）
+  const limited = { ok: false, status: 'ERROR_DURING_EXECUTION', stderr: 'HTTP 429 too many requests' }
+  assert.equal(isLimited(limited), true)
+  assert.equal(isTransientCliError(limited), false, '限流优先，不走静默重试')
+  // 其他失败态不误判
+  assert.equal(isTransientCliError({ ok: false, status: 'ERROR' }), false)
+  assert.equal(isTransientCliError({ ok: false, status: 'HUNG_TIMEOUT' }), false)
+  assert.match(failureHint({ ok: false, status: 'PARSE_ERROR' }), /未能.*解析出 result 事件/)
+})
+
+test('buildResult: 记录实际使用的模型（v1.1.4）—— 排查默认模型不必靠猜', () => {
+  const parsed = {
+    type: 'result', subtype: 'success', is_error: false, result: 'done',
+    session_id: 's1', duration_ms: 1000, num_turns: 2,
+    usage: { input_tokens: 10, output_tokens: 5 },
+    modelUsage: { 'hy4-preview': { outputTokens: 864, contextWindow: 1000000 } }
+  }
+  const r = buildResult(parsed, { exitCode: 0 }, 'bypassPermissions', '', '', 'codebuddy')
+  assert.equal(r.modelUsed, 'hy4-preview')
+  // 只取键名字符串，不把 modelUsage 下的对象带进结果（通道要求可无损 JSON 化）
+  assert.equal(typeof r.modelUsed, 'string')
+  assert.equal(JSON.parse(JSON.stringify(r)).modelUsed, 'hy4-preview')
+  // head 里带上 model，失败时还带 retried 标记
+  assert.match(renderResult(r)[0].text, /model=hy4-preview/)
+  const failed = { ok: false, status: 'ERROR_DURING_EXECUTION', mode: 'bypassPermissions', backend: 'codebuddy', modelUsed: 'hy4-preview', retried: true, response: '', stderr: '' }
+  const txt = renderResult(failed)[0].text
+  assert.match(txt, /retried=1/)
+  assert.match(txt, /已自动重试 1 次仍失败/, '失败必须带可行动指引，不能只有一行 head')
+  // 无 modelUsage 时字段为 null，不影响渲染
+  const r2 = buildResult({ ...parsed, modelUsage: undefined }, { exitCode: 0 }, 'plan', '', '', 'codebuddy')
+  assert.equal(r2.modelUsed, null)
+  assert.ok(!renderResult(r2)[0].text.includes('model='))
+})
 
 test('isLimited: status short-circuits', () => {
   assert.equal(isLimited({ ok: true, status: 'SUCCESS' }), false)

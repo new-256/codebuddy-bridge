@@ -70,7 +70,7 @@ test('协议握手 + 工具列表', async () => {
   const { child, client, init } = await startServer({})
   try {
     assert.equal(init.result.serverInfo.name, 'codebuddy-mcp-server')
-    assert.equal(init.result.serverInfo.version, '1.1.3')
+    assert.equal(init.result.serverInfo.version, '1.1.4')
     const tools = await client.request('tools/list', {})
     assert.deepEqual(tools.result.tools.map((t) => t.name).sort(), ['codebuddy_continue', 'codebuddy_run', 'codebuddy_status'])
     const ping = await client.request('ping', {})

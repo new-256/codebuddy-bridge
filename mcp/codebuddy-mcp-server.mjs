@@ -33,11 +33,11 @@ import { spawn } from 'node:child_process'
 import { resolve as resolvePath } from 'node:path'
 import { existsSync } from 'node:fs'
 import {
-  isLimited, parseCodebuddyJson, buildResult, buildArgv, createLineStream, createStatusEngine
+  isLimited, isTransientCliError, failureHint, parseCodebuddyJson, buildResult, buildArgv, createLineStream, createStatusEngine
 } from '../core/codebuddy-core.mjs'
 
 const NAME = 'codebuddy-mcp-server'
-const VERSION = '1.1.3'
+const VERSION = '1.1.4'
 const PROTOCOL = '2024-11-05'
 
 // Default cwd for codebuddy calls that do not pass one (override: CODEBUDDY_MCP_CWD).
@@ -191,6 +191,8 @@ function textResult(res) {
   const bk = res.backend || 'codebuddy'
   const limited = !res.ok && isLimited(res)
   const head = bk + ' ' + (res.ok ? 'OK' : 'FAILED') + ' [status=' + res.status + ' mode=' + res.mode +
+    (res.modelUsed ? ' model=' + res.modelUsed : '') +
+    (res.retried ? ' retried=1' : '') +
     (res.sessionId ? ' session=' + res.sessionId : '') +
     (res.totalTokens != null ? ' tokens=' + res.totalTokens : '') +
     (res.durationSeconds != null ? ' ' + res.durationSeconds + 's' : '') + ']'
@@ -199,6 +201,9 @@ function textResult(res) {
   let body = res.response || (res.stderr ? '[stderr] ' + res.stderr : '')
   // 观测性：无 result 事件时附带原始 stdout 尾部（诊断挂起/解析失败用）。
   if (!res.ok && res.rawStdout) body = (body ? body + '\n\n' : '') + '[raw stdout tail] ' + res.rawStdout
+  // 失败时给出可行动指引（此前失败只有一行 head，模型无从判断下一步）。
+  const hint = failureHint(res)
+  if (hint) body = (body ? body + '\n\n' : '') + hint
   return { content: [{ type: 'text', text: head + (body ? '\n\n' + body : '') + note }] }
 }
 
@@ -310,7 +315,16 @@ async function callTool(name, args) {
   // MCP has no human answerer, so there is no fallback dialog here: a failed
   // run returns its error text (annotated when it looks rate-limited) and the
   // calling agent decides what to do.
-  const res = await runCodebuddy(mapped)
+  let res = await runCodebuddy(mapped)
+  // CLI 侧瞬时错误（error_during_execution，CLI 不给原因）：静默自动重试一次。
+  // MCP 侧没有弹窗可问人，而实测同一请求重跑即过；不重试的话调用方只会拿到一行
+  // 无原因失败，白耗一次 status 再靠猜换模型（实测就是这么发生的）。
+  // 续接类调用（--resume/--continue）不自动重试：会话状态可能已被前一次改动。
+  if (isTransientCliError(res) && !mapped.sessionId && !mapped.continueLatest) {
+    const retry = await runCodebuddy(mapped)
+    if (retry.ok) res = retry
+    else { res = retry; res.retried = true }
+  }
   const out = textResult(res)
   if (!res.ok) out.isError = false
   return out
