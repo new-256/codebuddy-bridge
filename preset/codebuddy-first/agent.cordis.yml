@@ -21,11 +21,19 @@
 
 # The preset's own persona, shadowing the deployment default for this agent.
 # `{{model}}` and `{{cwd}}` resolve from the agent's own route and workspace.
+# 配置结构（v1.1.6）：DSH 后端 0.1.3-alpha.2 起 @deepseek-ai/dsh-persona 的
+# Schemastery schema 由旧版 `text:` 改为 `prefix: z.string().required()` +
+# `suffix: z.string().default("")`（见 dsh-persona 0.1.3-alpha.2 src/index.ts），
+# 旧 `text:` 字段被校验器拒绝挂载（invalid config: $.prefix missing required
+# value）。此写法与官方 standard preset 完全一致：prefix 渲染为
+# deployment:persona-prefix 段落，suffix 渲染为 deployment:persona-suffix；
+# 两者都是 {{…}} 模板，渲染时严格解析。
 - id: persona
   name: '@deepseek-ai/dsh-persona'
   config:
-    text: >-
-      You are a coding agent powered by the {{model}} model. Your working directory is {{cwd}}.
+    suffix: Your working directory is {{cwd}}.
+    prefix: >-
+      You are a coding agent powered by the {{model}} model.
 
 - id: agent-instructions
   name: '@deepseek-ai/dsh-agent-instructions'

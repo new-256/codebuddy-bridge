@@ -2,6 +2,37 @@
 
 本项目遵循 [语义化版本](https://semver.org/)；版本号同步 `package.json`、Git tag 与 GitHub Release（`npm run check` 中的 `scripts/verify.mjs` 在 CI 里锁三处一致）。
 
+## [1.1.6] - 2026-09-08
+
+适配：DSH 后端自动更新至 **0.1.3-alpha.2**（`@deepseek-ai/dsh-persona` 0.1.3-alpha.2 / Schemastery 3.18.2）的配置校验升级。
+
+### 背景（实际报错）
+
+DSH 后端自动更新后，官方插件 `@deepseek-ai/dsh-persona` 将配置 schema 由旧版 `text:` 字段强制升级为：
+
+```
+prefix: z.string().required()
+suffix: z.string().default("")
+```
+
+Schemastery 校验器直接拒绝旧结构挂载，恢复会话时抛出：
+
+```
+invalid config: - $.prefix missing required value
+```
+
+自定义预设（`codebuddy-first`、`cordis-agy`）因仍使用旧版 `text:` 字段全部被拒。
+
+### 修复
+
+- **persona 配置结构迁移**：`preset/codebuddy-first/agent.cordis.yml` 的 persona 行改为新版 `prefix:` + `suffix:` 拆分，与官方 standard preset 写法完全一致：`prefix` 渲染为 `deployment:persona-prefix` 段落（必填），`suffix` 渲染为 `deployment:persona-suffix`（此处给 `Your working directory is {{cwd}}.`）；两者都是 `{{…}}` 模板，渲染时严格解析。
+- **防回归护栏**：`scripts/verify.mjs` 新增三条检查——persona 行必须使用 `prefix:`（0.1.3-alpha.2 起必填）、必须声明 `suffix:`、**禁止出现旧 `text:` 字段**（否则 `npm run check` / CI 直接失败）。全局目录（dsh-home）的迁移由部署侧完成并已核对无残留旧字段。
+- **npm 发布能力**：去掉 `"private": true`，`files` 白名单补齐 `README*` 与 `LICENSE`，新增 `prepack` 钩子（发布前强制跑 verify + build 校验，保证发布内容与仓库一致且通过全部校验）。包名 `codebuddy-first-bridge` 在 npm registry 未被占用。
+
+### 测试
+
+- `npm run check` 全绿：版本三处同步（package.json / MCP VERSION / CHANGELOG 顶部）+ 新增 persona 结构护栏 + 全部 73 例测试通过。
+
 ## [1.1.5] - 2026-09-04
 
 修复：① 状态灯在标准模式下**整个调用过程完全不出现**；② 状态输出里混入希腊字母 `Σ`。

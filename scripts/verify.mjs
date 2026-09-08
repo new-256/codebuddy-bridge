@@ -32,6 +32,17 @@ const cordis = readFileSync(join(root, 'preset', 'codebuddy-first', 'agent.cordi
 check("agent.cordis.yml has bridge row (id: codebuddy-first-bridge)", /^- id: codebuddy-first-bridge$/m.test(cordis))
 check("agent.cordis.yml bridge row points to './codebuddy-first-bridge.mjs'", /name:\s*'\.\/codebuddy-first-bridge\.mjs'/.test(cordis))
 
+// persona 配置结构（v1.1.6）：DSH 后端 0.1.3-alpha.2 起 @deepseek-ai/dsh-persona 的
+// Schemastery schema 升级为 prefix: z.string().required() + suffix: z.string()
+// .default("")，旧 `text:` 字段被校验器拒绝挂载（恢复会话抛 invalid config:
+// $.prefix missing required value）。钉死新结构，禁止回退旧字段。
+const personaBlock = cordis.split('\n').findIndex((l) => l.includes("name: '@deepseek-ai/dsh-persona'"))
+const personaSlice = personaBlock >= 0 ? cordis.split('\n').slice(personaBlock).join('\n') : ''
+check('agent.cordis.yml has persona row', personaBlock >= 0)
+check('agent.cordis.yml persona uses prefix (required since dsh 0.1.3-alpha.2)', /^\s+prefix:/m.test(personaSlice))
+check('agent.cordis.yml persona declares suffix', /^\s+suffix:/m.test(personaSlice))
+check('agent.cordis.yml persona has NO legacy text: field', !/^\s+text:/m.test(personaSlice))
+
 const presetYml = readFileSync(join(root, 'preset', 'codebuddy-first', 'preset.yml'), 'utf8')
 check('preset.yml declares name', /^name:\s*\S+/m.test(presetYml))
 check('preset.yml declares description', /^description:\s*\S+/m.test(presetYml))
