@@ -77,7 +77,15 @@ Copy-Item -Recurse .\preset\codebuddy-first "$env:DSH_HOME\.agent-presets\codebu
 
 ### 方式 B：安装家级状态灯插件（随软件启动、所有会话可见）
 
-把 [`home-plugin/codebuddy-indicator/`](home-plugin/codebuddy-indicator/) 复制到 DSH 家级插件目录并注册到 `cordis.patch.yml`，状态灯即随 DSH 启动自动加载、所有会话自动显示、无需审批：
+**标准安装（推荐，v1.1.7 起）**——家级灯已并入主包 `codebuddy-first-bridge`（`dsh.bundle.patch` 指向其 bundle 补丁层），一条命令即可：
+
+```powershell
+dsh plugin --profile web add codebuddy-first-bridge
+```
+
+DSH 插件系统安装主包后自动挂载家级灯：host 半经裸包名解析到 `main → lib/index.mjs`，client 半靠 `dsh.client` 声明自动纳入浏览器花名册，无需手动复制、无需 junction、无需改 `cordis.patch.yml`。
+
+**旧式手动安装（留档）**：
 
 ```powershell
 # 1) 复制插件源码
@@ -89,16 +97,13 @@ New-Item -ItemType Junction -Path "$dshHome\node_modules\codebuddy-indicator" -T
 New-Item -ItemType Junction -Path "$dshHome\profiles\node_modules\codebuddy-indicator" -Target "$dshHome\plugins\codebuddy-indicator"
 New-Item -ItemType Junction -Path "$dshHome\profiles\web\node_modules\codebuddy-indicator" -Target "$dshHome\plugins\codebuddy-indicator"
 
-# 3) 在 cordis.patch.yml 末尾追加两行（HMR 自动热载，无需重启）：
+# 3) 在 cordis.patch.yml 追加一行（裸包名经 junction 解析到 lib/index.mjs）：
 #    - insert:
 #        - id: codebuddy-indicator
-#          name: file:///.../plugins/codebuddy-indicator/lib/index.mjs?v=1
-#    - insert:
-#        - id: codebuddy-indicator-client
 #          name: codebuddy-indicator
 ```
 
-配合 **preset 形态**（方式 A）使用：preset 里的 `codebuddy-first-bridge.mjs` 每次状态变化会 `ctx.emit('codebuddy/status')` 推送到家级收集器，灯随之实时更新；改 `lib/index.mjs` 后 bump `?v=N` 即热载，改 `lib/client.js` 后刷新浏览器即生效。
+配合 **preset 形态**（方式 A）使用：preset 里的 `codebuddy-first-bridge.mjs` 每次状态变化会 `ctx.emit('codebuddy/status')` 推送到家级收集器，灯随之实时更新；改 `lib/index.mjs` 后重启 DSH 生效（或临时改成 `name: codebuddy-indicator?v=N` 热载），改 `lib/client.js` 后刷新浏览器即生效。
 
 ### 方式 C：作为动态 Cordis 插件运行（含状态灯）
 
@@ -206,6 +211,7 @@ codebuddy-first-bridge/
 
 | 版本 | 适配 DSH | 内容 |
 | --- | --- | --- |
+| [v1.1.7](https://github.com/new-256/codebuddy-bridge/releases/tag/v1.1.7) | dsh 0.1.3-alpha.2+ / Desktop 0.3.4+ | **家级状态灯改为标准 npm 分发形态**（对齐 agy-first-bridge v1.6.0）：主包 `main` 直指 `home-plugin/codebuddy-indicator/lib/index.mjs`（host 真入口）、`dsh.client.platform: web`（client 半自动纳入花名册）、`dsh.bundle.patch`（安装后自动挂载家级灯）、`bin.codebuddy-mcp-server`；新增 bundle 补丁层，家级灯由裸包名一行加载——不再有 `file://` 行、不再有 client-entry 占位，单实例无二次注册崩溃风险。本机用户层 `cordis.patch.yml` 同步由 `file://...?v=6` 改为裸包名。跨设备安装：`dsh plugin --profile web add codebuddy-first-bridge` |
 | [v1.1.6](https://github.com/new-256/codebuddy-bridge/releases/tag/v1.1.6) | dsh 0.1.3-alpha.2（`@deepseek-ai/dsh-persona` 0.1.3-alpha.2 起） | **适配 dsh-persona 配置校验升级**：后端自动更新至 0.1.3-alpha.2 后，官方 `@deepseek-ai/dsh-persona` 将 Schemastery schema 由旧 `text:` 强制升级为 `prefix: z.string().required()` + `suffix: z.string().default("")`，旧结构被校验器拒绝挂载（恢复会话抛 `invalid config: - $.prefix missing required value`）。persona 行迁移为 `prefix:` + `suffix:` 拆分（与官方 standard preset 写法一致）；`verify.mjs` 新增防回归护栏（禁残留 `text:`、要求 `prefix:`/`suffix:`）；并开放 **npm 发布**（去 `private`、`files` 白名单补 README/LICENSE、`prepack` 发布前强制全量校验），`npm install -g codebuddy-first-bridge` 即可安装 |
 | [v1.1.5](https://github.com/new-256/codebuddy-bridge/releases/tag/v1.1.5) | Desktop 0.3.4+（实测 0.3.14）/ dsh 0.1.2-alpha.4+ | **修复状态灯对标准模式完全失明**：标准（非 codebuddy-first）模式经**全局 MCP 行**调用，而 MCP 是独立子进程 —— 没有 `ctx.emit`、拿不到 `codebuddyCollector` 服务、`createStatusEngine(null)` 直接关掉 publish，家级插件从来收不到任何数据，灯在整个调用过程中不出现。改用**文件通道**（MCP 原子写 `<dsh-home>/codebuddy-indicator-mcp.json`，插件响应请求时读取合并；两端从自身模块位置推导路径，不需要端口 —— `webServer.register` 不暴露端口且端口实测会变）。修好通道后又发现活动明细仍全空：`child.stdout` 未声明编码 → `'data'` 给的是 `Buffer` → `pushChunk` 静默丢弃 → `foldEvent` 从不触发（而 tokens/session 全正常，因为 result 是从累积字符串解析的），补 `setEncoding('utf8')`。另修状态输出里的希腊字母 `Σ` → `total`。实测：端点全程 `state=running`，明细推进到 `cur=Bash#6`、trail 1→12。测试 68→73 例 |
 | [v1.1.4](https://github.com/new-256/codebuddy-bridge/releases/tag/v1.1.4) | Desktop 0.3.4+（实测 0.3.14）/ dsh 0.1.2-alpha.4+ | **修复标准模式调用不顺畅**：codebuddy CLI 自报的 `error_during_execution` 瞬时故障此前既不重试、也**不给任何原因**（失败只回一行 head），调用方只能白耗一次 `codebuddy_status` 再靠猜换 `model` 才成功。实测同一任务同一默认模型（`hy4-preview`）重跑即过，证实是 CLI/服务端瞬时故障而非模型或任务问题。现在：① 瞬时错误**静默自动重试一次**（preset 与 MCP 两条路径；与限流/网络类分流——后者仍问用户，重试可能纯烧钱；续接类调用不自动重试）；② 失败**必带可行动指引**（该重试 / 该换模型 / 该改用原生工具）；③ 结果 head 记录**实际使用的模型** `model=…` 与 `retried=1`，排查默认模型不必再靠猜。测试 66→68 例 |

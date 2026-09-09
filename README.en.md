@@ -62,7 +62,15 @@ Full steps and validation are in [docs/en/INSTALL.md](docs/en/INSTALL.md).
 
 ### Option B: install the home-level status-light plugin (start-up persistent, every session)
 
-Copy [`home-plugin/codebuddy-indicator/`](home-plugin/codebuddy-indicator/) into the DSH home plugin directory and register it in `cordis.patch.yml`; the light then loads automatically with DSH, appears in every session, and needs no approval:
+**Standard install (recommended, v1.1.7+)** — the home-level light is bundled into the main package `codebuddy-first-bridge` (its `dsh.bundle.patch` points at the indicator's bundle patch layer), so a single command installs it:
+
+```powershell
+dsh plugin --profile web add codebuddy-first-bridge
+```
+
+The DSH plugin system mounts the home-level light automatically after installing the main package: the host half resolves the bare package name to `main → lib/index.mjs`, and the client half is auto-registered in the browser roster via the `dsh.client` declaration — no manual copy, no junctions, no `cordis.patch.yml` edits.
+
+**Legacy manual install (kept for reference)**:
 
 ```powershell
 # 1) copy the plugin source
@@ -74,16 +82,13 @@ New-Item -ItemType Junction -Path "$dshHome\node_modules\codebuddy-indicator" -T
 New-Item -ItemType Junction -Path "$dshHome\profiles\node_modules\codebuddy-indicator" -Target "$dshHome\plugins\codebuddy-indicator"
 New-Item -ItemType Junction -Path "$dshHome\profiles\web\node_modules\codebuddy-indicator" -Target "$dshHome\plugins\codebuddy-indicator"
 
-# 3) append two rows to cordis.patch.yml (HMR hot-reloads, no restart needed):
+# 3) append one row to cordis.patch.yml (bare name resolves via junction to lib/index.mjs):
 #    - insert:
 #        - id: codebuddy-indicator
-#          name: file:///.../plugins/codebuddy-indicator/lib/index.mjs?v=1
-#    - insert:
-#        - id: codebuddy-indicator-client
 #          name: codebuddy-indicator
 ```
 
-Pair it with the **preset form** (Option A): the preset's `codebuddy-first-bridge.mjs` emits `ctx.emit('codebuddy/status')` on every state change, which the home-level collector merges and the light renders. After editing `lib/index.mjs`, bump `?v=N` to hot-reload; after editing `lib/client.js`, refresh the browser.
+Pair it with the **preset form** (Option A): the preset's `codebuddy-first-bridge.mjs` emits `ctx.emit('codebuddy/status')` on every state change, which the home-level collector merges and the light renders. After editing `lib/index.mjs`, restart DSH (or temporarily switch to `name: codebuddy-indicator?v=N` to hot-reload); after editing `lib/client.js`, refresh the browser.
 
 ### Option C: run as a dynamic Cordis plugin (with the status light)
 
@@ -176,6 +181,7 @@ Semantic versioning via `package.json` + Git tags + GitHub Releases (see [docs/C
 
 | Version | DSH compat | Highlights |
 | --- | --- | --- |
+| [v1.1.7](https://github.com/new-256/codebuddy-bridge/releases/tag/v1.1.7) | dsh 0.1.3-alpha.2+ / Desktop 0.3.4+ | **The home-level status light now ships in the standard npm distribution shape** (aligned with agy-first-bridge v1.6.0): the main package's `main` points straight at `home-plugin/codebuddy-indicator/lib/index.mjs` (the real host entry), `dsh.client.platform: web` auto-registers the client half in the browser roster, `dsh.bundle.patch` auto-mounts the indicator bundle layer on install, and `bin.codebuddy-mcp-server` is declared. A new bundle patch layer loads the indicator via a single bare-package-name row — no more `file://` row, no more client-entry placeholder, single instance, no double-registration crash. The local user-layer `cordis.patch.yml` was switched from `file://...?v=6` to the bare package name. Cross-device install: `dsh plugin --profile web add codebuddy-first-bridge` |
 | [v1.1.6](https://github.com/new-256/codebuddy-bridge/releases/tag/v1.1.6) | dsh 0.1.3-alpha.2+ (`@deepseek-ai/dsh-persona` 0.1.3-alpha.2+) | **Adapts to the dsh-persona config-schema upgrade**: after the backend auto-updated to 0.1.3-alpha.2, the official `@deepseek-ai/dsh-persona` enforced its Schemastery schema from the legacy `text:` field to `prefix: z.string().required()` + `suffix: z.string().default("")`, and the validator rejected the old shape at mount (resuming a session threw `invalid config: - $.prefix missing required value`). The persona row now uses the `prefix:` + `suffix:` split exactly like the official standard preset; `verify.mjs` gained regression guards (no legacy `text:` allowed, `prefix:`/`suffix:` required); and the package is now **npm-publishable** (dropped `private`, `files` whitelist adds README/LICENSE, `prepack` runs full validation before publishing) — `npm install -g codebuddy-first-bridge` works |
 | [v1.1.5](https://github.com/new-256/codebuddy-bridge/releases/tag/v1.1.5) | Desktop 0.3.4+ (verified 0.3.14) / dsh 0.1.2-alpha.4+ | **Fixes the status light being blind to standard mode**: standard (non-codebuddy-first) sessions dispatch through the **global MCP row**, and the MCP server is a separate subprocess — no `ctx.emit`, no access to the `codebuddyCollector` service, and `createStatusEngine(null)` disabled publishing outright, so the home plugin never received any data and the light never appeared for the whole call. Replaced with a **file channel** (MCP atomically writes `<dsh-home>/codebuddy-indicator-mcp.json`; the plugin merges it when serving the endpoint — both sides derive the path from their own module location, so no port is needed: `webServer.register` does not expose one and the port was observed to change). With the channel fixed, activity detail was still empty: `child.stdout` had no encoding set, so `'data'` delivered a `Buffer`, `pushChunk` silently dropped it, and `foldEvent` never fired (while tokens/session stayed correct, since the result is parsed from the accumulated string) — fixed with `setEncoding('utf8')`. Also replaced the Greek `Σ` in status output with `total`. Verified: the endpoint reports `state=running` throughout, with detail advancing to `cur=Bash#6` and the trail growing 1→12. Tests 68→73 |
 | [v1.1.4](https://github.com/new-256/codebuddy-bridge/releases/tag/v1.1.4) | Desktop 0.3.4+ (verified 0.3.14) / dsh 0.1.2-alpha.4+ | **Fixes rough dispatch in standard mode**: the CLI's own `error_during_execution` transient failure was previously neither retried nor explained (a failure returned a single head line), so the caller burned a `codebuddy_status` call and then guessed its way to an explicit `model`. Verified by reproduction: the same task on the same default model (`hy4-preview`) succeeded on a rerun, confirming a CLI/service-side transient fault rather than a bad model or a bad task. Now: ① transient errors are **silently retried once** (both the preset and MCP paths; kept separate from rate-limit/network failures, which still ask the user because retrying may just burn quota; resume/continue calls are never auto-retried); ② failures always carry **actionable guidance** (retry / switch model / finish with native tools); ③ the result head records the **model actually used** (`model=…`) plus `retried=1`, so diagnosing the default model no longer requires guesswork. Tests 66→68 |

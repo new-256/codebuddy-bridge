@@ -2,6 +2,27 @@
 
 本项目遵循 [语义化版本](https://semver.org/)；版本号同步 `package.json`、Git tag 与 GitHub Release（`npm run check` 中的 `scripts/verify.mjs` 在 CI 里锁三处一致）。
 
+## [1.1.7] - 2026-09-08
+
+适配：家级状态灯 `codebuddy-indicator` 从旧式本地 `file://` 注册改为**标准 npm 分发形态**（对齐 agy-first-bridge v1.6.0）。
+
+### 改动
+
+- **主包 package.json 补全标准分发字段**：`main` 直指 `./home-plugin/codebuddy-indicator/lib/index.mjs`（host 半真入口，不再是 client-entry 占位）、`exports`（`.` → index.mjs、`./client` → client.js）、`dsh.client.platform: web`（client 半自动纳入浏览器花名册）、`dsh.bundle.patch`（安装后自动挂载家级灯 bundle 补丁层）、`bin`（`codebuddy-mcp-server`）、`repository`/`homepage`/`bugs`。
+- **新增 bundle 补丁层** `home-plugin/codebuddy-indicator/cordis.patch.yml`：裸包名 `name: codebuddy-first-bridge` 一行加载，不再有 `file://` 行、不再有 client-entry 占位 → 单实例，消除双实例二次注册崩溃风险（历史原因见 client-entry.mjs 留档注释）。
+- **本机注册同步**：dsh-home 用户层 `cordis.patch.yml` 的 codebuddy-indicator 行由 `file:///...?v=6` 改为裸包名 `name: codebuddy-indicator`（经 junction 解析到 lib/index.mjs）。
+- **防回归护栏**：`scripts/verify.mjs` 新增 6 条检查——主包 main 指向 indicator index.mjs、dsh.bundle.patch 声明、exports ./client、indicator 包 main 无占位、bundle 补丁层存在且含 insert。
+
+### 安装方式（跨设备）
+
+```
+dsh plugin --profile web add codebuddy-first-bridge
+```
+
+### 测试
+
+- `npm run check` 全绿：版本三处同步（package.json / MCP VERSION / CHANGELOG 顶部）+ persona 结构护栏 + 标准分发护栏 + 全部 73 例测试通过。
+
 ## [1.1.6] - 2026-09-08
 
 适配：DSH 后端自动更新至 **0.1.3-alpha.2**（`@deepseek-ai/dsh-persona` 0.1.3-alpha.2 / Schemastery 3.18.2）的配置校验升级。

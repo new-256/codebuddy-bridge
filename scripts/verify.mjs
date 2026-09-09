@@ -47,4 +47,16 @@ const presetYml = readFileSync(join(root, 'preset', 'codebuddy-first', 'preset.y
 check('preset.yml declares name', /^name:\s*\S+/m.test(presetYml))
 check('preset.yml declares description', /^description:\s*\S+/m.test(presetYml))
 
+// 标准 npm 分发形态（v1.1.7，对齐 agy-first-bridge v1.6.0）：
+// 主包 package.json main 直指 indicator 的 lib/index.mjs（host 真入口），
+// dsh.bundle.patch 指向 bundle 补丁层，家级插件由裸包名一行加载，不再有
+// file:// 行 / client-entry 占位。钉死该结构，防止退回旧式安装。
+const hpPkg = JSON.parse(readFileSync(join(root, 'home-plugin', 'codebuddy-indicator', 'package.json'), 'utf8'))
+check('main package main points to indicator lib/index.mjs', pkg.main === './home-plugin/codebuddy-indicator/lib/index.mjs')
+check('main package dsh.bundle.patch declared', /^[^/].*"patch"\s*:\s*"\.\/home-plugin\/codebuddy-indicator\/cordis\.patch\.yml"/m.test(JSON.stringify(pkg.dsh || {})))
+check('main package exports ./client points to client.js', pkg.exports && pkg.exports['./client'] === './home-plugin/codebuddy-indicator/lib/client.js')
+check('indicator package main points to lib/index.mjs (no client-entry placeholder)', hpPkg.main === './lib/index.mjs')
+check('indicator package has bundle patch layer', hpPkg.dsh && hpPkg.dsh.bundle && hpPkg.dsh.bundle.patch === './cordis.patch.yml')
+check('bundle patch layer exists', readFileSync(join(root, 'home-plugin', 'codebuddy-indicator', 'cordis.patch.yml'), 'utf8').includes('- insert:'))
+
 process.exit(failed ? 1 : 0)

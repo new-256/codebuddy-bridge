@@ -1,0 +1,23 @@
+# codebuddy-indicator — bundle 补丁层（并入主包 codebuddy-first-bridge v1.1.7）
+#
+# 本文件由 DSH 插件系统在安装后自动作为 profile 的 bundle 层挂载：
+#   dsh plugin --profile web add codebuddy-first-bridge      (npm registry)
+#   dsh plugin --profile web add <本地包路径>                (本地安装)
+# 声明位置: 主包 package.json 的 dsh.bundle.patch。
+#
+# host 半用裸包名 codebuddy-first-bridge 解析（主包 package.json main →
+# home-plugin/codebuddy-indicator/lib/index.mjs）；client 半（浏览器）靠
+# 主包 package.json 的 dsh.client 声明被宿主 client-modules 自动纳入
+# 花名册，无需单独一行。
+#
+# 标准 npm 分发形态（v1.1.7 起，对齐 agy-first-bridge v1.6.0）：
+# 不再使用 file:// 行或 client-entry 占位 —— main 直接指向 lib/index.mjs，
+# 裸包名一行加载，单实例，无二次注册崩溃风险。
+# 旧式安装（复制本目录 + junction + 用户层裸包名 codebuddy-indicator）仍受支持：
+# 用户层 cordis.patch.yml 同 id 行后应用，整体覆盖本行。
+# 此处只放通用默认值。机器特定配置请写在用户层补丁
+#   Windows: %APPDATA%\DSH Desktop\dsh-home\cordis.patch.yml
+# 的同 id 行里 — 用户层后应用，按行 id 整体覆盖本行 config。
+- insert:
+    - id: codebuddy-indicator
+      name: codebuddy-first-bridge

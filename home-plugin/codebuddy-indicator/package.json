@@ -1,12 +1,12 @@
 {
   "name": "codebuddy-indicator",
-  "description": "codebuddy 状态灯（家级）：收集各会话 codebuddy-first-bridge 推送的 codebuddy 运行状态，经 webServer HTTP 路由暴露给浏览器，在会话标题栏按项目（工作目录）分别显示状态灯。随软件启动、所有会话自动可见。",
-  "version": "1.1.6",
+  "description": "codebuddy 状态灯（家级）：收集各会话 codebuddy-first-bridge 推送的 codebuddy 运行状态，经 webServer HTTP 路由暴露给浏览器，在会话标题栏按项目（工作目录）分别显示状态灯。随软件启动、所有会话自动可见。标准 npm 分发（v1.1.7 起并入主包 codebuddy-first-bridge，dsh.bundle.patch 指向本目录 cordis.patch.yml，dsh plugin --profile web add codebuddy-first-bridge 直接安装）。",
+  "version": "1.1.7",
   "private": true,
   "type": "module",
-  "main": "./lib/client-entry.mjs",
+  "main": "./lib/index.mjs",
   "exports": {
-    ".": "./lib/client-entry.mjs",
+    ".": "./lib/index.mjs",
     "./client": "./lib/client.js",
     "./package.json": "./package.json"
   },
@@ -14,11 +14,18 @@
     "client": {
       "platform": "web"
     },
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
     "compat": {
       "desktop": ">=0.3.4",
       "backend": ">=0.1.2-alpha.4",
       "verified": "DSH Desktop 0.3.5 & 0.3.14 / @deepseek-ai/dsh 0.1.2-alpha.5"
     }
   },
+  "files": [
+    "lib/",
+    "cordis.patch.yml"
+  ],
   "license": "MIT"
 }

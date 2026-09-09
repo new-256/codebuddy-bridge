@@ -1,10 +1,27 @@
 {
   "name": "codebuddy-first-bridge",
-  "version": "1.1.6",
-  "description": "codebuddy-first bridge for DeepSeek Harness (DSH): prioritize the local codebuddy CLI in every mode (full DSH control, no prompts), with a rate-limit/network fallback dialog, a live status light (dynamic form + home-level plugin), per-project token usage accounting, and a zero-dependency MCP server so any MCP-capable agent (Claude Code / Codex / Cherry Studio …) discovers codebuddy itself.",
+  "version": "1.1.7",
+  "description": "codebuddy-first bridge for DeepSeek Harness (DSH): prioritize the local codebuddy CLI in every mode (full DSH control, no prompts), with a rate-limit/network fallback dialog, a live status light (dynamic form + home-level plugin), per-project token usage accounting, and a zero-dependency MCP server so any MCP-capable agent (Claude Code / Codex / Cherry Studio …) discovers codebuddy itself. Single npm package: install the home-level status light via `dsh plugin --profile web add codebuddy-first-bridge`.",
   "license": "MIT",
   "engines": {
     "node": ">=18"
+  },
+  "main": "./home-plugin/codebuddy-indicator/lib/index.mjs",
+  "exports": {
+    ".": "./home-plugin/codebuddy-indicator/lib/index.mjs",
+    "./client": "./home-plugin/codebuddy-indicator/lib/client.js",
+    "./package.json": "./package.json"
+  },
+  "dsh": {
+    "client": {
+      "platform": "web"
+    },
+    "bundle": {
+      "patch": "./home-plugin/codebuddy-indicator/cordis.patch.yml"
+    }
+  },
+  "bin": {
+    "codebuddy-mcp-server": "mcp/codebuddy-mcp-server.mjs"
   },
   "scripts": {
     "build": "node scripts/build.mjs",
@@ -29,7 +46,16 @@
     "cordis",
     "codebuddy",
     "mcp",
+    "mcp-server",
     "agent",
     "deepseek-harness"
-  ]
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/new-256/codebuddy-bridge.git"
+  },
+  "homepage": "https://github.com/new-256/codebuddy-bridge#readme",
+  "bugs": {
+    "url": "https://github.com/new-256/codebuddy-bridge/issues"
+  }
 }
