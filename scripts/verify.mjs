@@ -59,4 +59,25 @@ check('indicator package main points to lib/index.mjs (no client-entry placehold
 check('indicator package has bundle patch layer', hpPkg.dsh && hpPkg.dsh.bundle && hpPkg.dsh.bundle.patch === './cordis.patch.yml')
 check('bundle patch layer exists', readFileSync(join(root, 'home-plugin', 'codebuddy-indicator', 'cordis.patch.yml'), 'utf8').includes('- insert:'))
 
+// client 注册 id 闸门（v1.1.9，事故回归）：client-modules 的 graph row 以【包名】
+// 为 id（exports["./client"] 归属包），bundle 脚本执行后按
+// `loaded without registering "<packageName>"` 校验注册名。client.js 的
+// __ModuleLoader__.load({ id }) 必须与包名严格一致，否则整个 client combo
+// 加载失败 → DSH 启动致命屏（v1.1.7 写成旧独立包名 codebuddy-indicator 即此事故）。
+// 从 exports["./client"] 解析实际文件，提取 load() 调用后的首个 id:，与 pkg.name 比对。
+const clientPath = pkg.exports && pkg.exports['./client']
+check('main package declares exports["./client"]', typeof clientPath === 'string' && clientPath.length > 0)
+if (clientPath) {
+  const clientSrc = readFileSync(join(root, clientPath), 'utf8')
+  const loadIdx = clientSrc.indexOf('__ModuleLoader__.load(')
+  check('client.js has __ModuleLoader__.load call', loadIdx >= 0)
+  if (loadIdx >= 0) {
+    // 取 load( 后首个 {…} 窗口，剥掉 // 行注释（注释里也会出现 id 字样），再提 id。
+    const window = clientSrc.slice(loadIdx, loadIdx + 1500).replace(/\/\/[^\n]*/g, '')
+    const idMatch = window.match(/\bid:\s*["']([^"']+)["']/)
+    check('client.js load id extracted', !!idMatch)
+    check('client.js load id == package name (' + pkg.name + ')', idMatch && idMatch[1] === pkg.name)
+  }
+}
+
 process.exit(failed ? 1 : 0)

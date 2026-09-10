@@ -1,7 +1,7 @@
 {
   "name": "codebuddy-indicator",
   "description": "codebuddy 状态灯（家级）：收集各会话 codebuddy-first-bridge 推送的 codebuddy 运行状态，经 webServer HTTP 路由暴露给浏览器，在会话标题栏按项目（工作目录）分别显示状态灯。随软件启动、所有会话自动可见。标准 npm 分发（v1.1.7 起并入主包 codebuddy-first-bridge，dsh.bundle.patch 指向本目录 cordis.patch.yml，dsh plugin --profile web add codebuddy-first-bridge 直接安装）。",
-  "version": "1.1.7",
+  "version": "1.1.9",
   "private": true,
   "type": "module",
   "main": "./lib/index.mjs",

@@ -2,6 +2,24 @@
 
 本项目遵循 [语义化版本](https://semver.org/)；版本号同步 `package.json`、Git tag 与 GitHub Release（`npm run check` 中的 `scripts/verify.mjs` 在 CI 里锁三处一致）。
 
+## [1.1.9] - 2026-09-11
+
+加固：发布闸门补上 **client 注册 id 必须等于包名** 的静态检查，杜绝 v1.1.7→v1.1.8 同类事故复发。
+
+### 背景（2026-09-10 事故）
+
+v1.1.7 把家级灯并入主包后，`client.js` 的 `__ModuleLoader__.load({ id })` 仍写旧独立包名 `codebuddy-indicator`，与 graph row 以包名注册的 id `codebuddy-first-bridge` 不匹配 → client-modules 校验 `loaded without registering "codebuddy-first-bridge"` 失败 → 整个 client combo 崩溃 → DSH 启动致命屏（v1.1.8 热修）。根因除 id 写错外，**发布闸门漏检**：`verify.mjs` 不校验 client 注册 id，且 `prepack` 不跑测试（热修时 test 版本断言漂移也漏过）。
+
+### 改动
+
+- `scripts/verify.mjs` 新增 4 条护栏：主包必须声明 `exports["./client"]`；client 文件必须含 `__ModuleLoader__.load(` 调用；必须能从 load 块提取 `id:`；**提取的 id 必须严格等于 `package.json` 的 `name`**（剥除 `//` 注释后匹配，避免注释里的 id 字样干扰）。
+- `prepack` 由 `verify + build --check` 加强为 `verify + npm test`：发布前强制跑完整测试套件，版本断言漂移等问题不再可能漏到 npm。
+- 三处版本号同步 1.1.9（package.json / MCP VERSION / CHANGELOG；test 断言、home-plugin 子包版本一并同步）。
+
+### 测试
+
+- `npm run check` 全绿：版本三处同步 + persona 护栏 + 标准分发护栏 + **client id 护栏** + 全部 74 例测试通过。
+
 ## [1.1.8] - 2026-09-10
 
 修复：client 半 `__ModuleLoader__.load` 注册 id 与包名不匹配导致 DSH 启动致命屏。
