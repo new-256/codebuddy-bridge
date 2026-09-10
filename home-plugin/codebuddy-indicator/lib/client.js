@@ -19,7 +19,14 @@
 // 租约 → 普通会话仍亮灯；通道 ① 就是为消除这个漏洞加的。
 
 window.__ModuleLoader__.load({
-  id: "codebuddy-indicator",
+  // ⚠ 注册 id 必须等于【包名】codebuddy-first-bridge：client-modules 的 graph row
+  // 以 package name 为 id（exports["./client"] 的归属包），bundle 脚本执行后按
+  // "loaded without registering \"<packageName>\"" 校验注册名。v1.1.7 及以前写成
+  // "codebuddy-indicator"（旧独立包名），包改名并入 codebuddy-first-bridge 后
+  // 不匹配 → 整个 client combo 加载失败 → DSH 启动致命屏（2026-09-10 18:08 事故）。
+  // v1.1.8 修正为与包名一致。slot id 'codebuddy-indicator-home' 与 CSS 标记是
+  // 另一命名空间，无需改。
+  id: "codebuddy-first-bridge",
   factory: (require) => {
     var module = { exports: {} };
     var exports = module.exports;

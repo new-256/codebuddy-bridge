@@ -2,6 +2,22 @@
 
 本项目遵循 [语义化版本](https://semver.org/)；版本号同步 `package.json`、Git tag 与 GitHub Release（`npm run check` 中的 `scripts/verify.mjs` 在 CI 里锁三处一致）。
 
+## [1.1.8] - 2026-09-10
+
+修复：client 半 `__ModuleLoader__.load` 注册 id 与包名不匹配导致 DSH 启动致命屏。
+
+### 根因
+
+client-modules 的 graph row 以【包名】（`codebuddy-first-bridge`）为 id；bundle 脚本执行后按
+`loaded without registering "<packageName>"` 校验注册名。v1.1.7 起包内 client.js 仍写
+`id: "codebuddy-indicator"`（旧独立包名），包并入主包后两者不匹配 → 整个 client combo
+加载失败 → `Failed to load plugins`（2026-09-10 18:08 事故，桌面壳被迫进入安全模式）。
+
+### 改动
+
+- `home-plugin/codebuddy-indicator/lib/client.js`：注册 id 改为 `codebuddy-first-bridge`（与包名一致；slot id `codebuddy-indicator-home` 与 CSS 标记属另一命名空间，无需改）。
+- 对照组：`agy-indicator`（独立 npm 包）包名 = 注册名，无此问题；`agy-first-bridge` v1.6.0 的 home-plugin 形态存在同样隐患（包名 ≠ 注册名），其安装为 bundle 时将复现同类错误——建议下个版本同步修正。
+
 ## [1.1.7] - 2026-09-08
 
 适配：家级状态灯 `codebuddy-indicator` 从旧式本地 `file://` 注册改为**标准 npm 分发形态**（对齐 agy-first-bridge v1.6.0）。
