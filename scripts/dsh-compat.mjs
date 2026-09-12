@@ -378,11 +378,12 @@ async function main() {
   }
 
   const pass = finalRows.filter((r) => r.functional && r.functional.ok).length
+  const failed = finalRows.filter((r) => r.functional && !r.functional.ok && !r.functional.skipped).length
   const skip = finalRows.filter((r) => r.functional && r.functional.skipped && !r.functional.transient).length
   const pending = finalRows.filter((r) => r.functional && r.functional.skipped && r.functional.transient).length
-  const untested = finalRows.length - pass - skip - pending
+  const untested = finalRows.length - pass - failed - skip - pending
   console.log(`\ncompat: 明细已写入 ${resultPath}（${finalRows.length} 行）`)
-  console.log(`compat: 回测汇总 PASS ${pass} / 不可安装 ${skip} / 待重跑 ${pending} / 未回测 ${untested}`)
+  console.log(`compat: 回测汇总 PASS ${pass} / 功能失败 ${failed} / 不可安装 ${skip} / 待重跑 ${pending} / 未回测 ${untested}`)
 }
 
 main().catch((e) => {
