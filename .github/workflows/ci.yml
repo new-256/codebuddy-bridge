@@ -75,6 +75,22 @@ jobs:
       - name: Run node:test suite
         run: node --test
 
+  audit:
+    # npm ↔ git 双侧一致性：npm 上每个已发布版本的 tarball 必须与 v<version>
+    # tag 树逐文件一致（v1.1.10 引入；背景见 docs/RELEASE-SOP.md §4）。
+    # 需要 fetch-depth: 0 拉全量历史与 tag 供 git archive 使用。
+    name: npm↔git sync audit
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+      - name: Audit every published npm version against its git tag
+        run: node scripts/audit-npm-sync.mjs
+
   yaml:
     name: validate composition YAML
     runs-on: ubuntu-latest

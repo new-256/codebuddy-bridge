@@ -205,12 +205,22 @@ codebuddy-first-bridge/
 
 > **派生产物约定**：`dynamic/host.js` 与 `preset/codebuddy-first/codebuddy-core.mjs` 是生成物。修改共享逻辑改 `core/`，修改动态适配改 `host.template.mjs`，然后 `npm run build` 重新生成（`npm test` 的同步锁定会拦住忘记重生成的提交）。
 
+## 兼容性与支持声明
+
+对 npm 上**全部 20 个**已发布 `@deepseek-ai/dsh` 版本（0.0.1-rc.1 → 0.1.5-rc.2）做过回测，完整矩阵与证据见 [docs/COMPATIBILITY.md](docs/COMPATIBILITY.md)。结论速览：
+
+- **preset 形态（方式 A）**：要求 **dsh ≥ 0.1.3-alpha.2**（dsh-persona 的 `prefix:`/`suffix:` schema 从该版本起强制；更早版本用旧 `text:` 字段会拒绝挂载）。
+- **家级状态灯 bundle 安装（方式 B）**：`dsh plugin --profile web add codebuddy-first-bridge` **全 20 个版本可用**（plugin CLI / pnpm 转发 / `dsh.bundle.patch` / bundles 对账自 0.0.1-rc.1 即存在）。要求 `codebuddy-first-bridge ≥ 1.1.8`（1.1.7 的 client 注册 id 失配会在**所有** dsh 版本上触发启动致命屏）。
+- **MCP server（方式 D）**：零依赖独立进程，与 dsh 版本无关。
+- 新 dsh 版本发布后可用 `npm run compat:dsh` 重新回测（详见 [docs/RELEASE-SOP.md](docs/RELEASE-SOP.md) §3）。
+
 ## 版本与发布
 
-版本管理遵循语义化版本（`package.json` + Git tag + GitHub Release）：
+版本管理遵循语义化版本（`package.json` + Git tag + GitHub Release；npm↔git 逐版本内容审计见 `npm run audit:npm`，CI 已接入）：
 
 | 版本 | 适配 DSH | 内容 |
 | --- | --- | --- |
+| [v1.1.10](https://github.com/new-256/codebuddy-bridge/releases/tag/v1.1.10) | 见支持声明（全版本回测） | **工程化：一致性审计 + 全版本回测 + 支持声明 + 交接文档**：新增 `audit-npm-sync.mjs`（npm 每个已发布版本 ↔ git tag 树逐文件 sha256 比对，`git -c core.autocrlf=false` 取原始字节；审计结论 1.1.6–1.1.9 内容零漂移）与 `dsh-compat.mjs`（20 个 dsh 版本 7 契约点静态探测 + 沙箱真实安装回测）；`docs/COMPATIBILITY.md` 支持声明、`docs/RELEASE-SOP.md` 发布维护 SOP、`docs/HANDOVER.md` 交接文档；CI 增 npm↔git audit job；CRLF 归一化 + `.gitattributes`（`* text=auto eol=lf`），1.1.10 起 tarball 与 tag 字节级一致 |
 | [v1.1.9](https://github.com/new-256/codebuddy-bridge/releases/tag/v1.1.9) | dsh 0.1.5-rc.1 实测 / 0.1.2-alpha.4+ | **发布闸门加固（防 v1.1.8 事故复发）**：`verify.mjs` 新增 client 注册 id 静态检查——从 `exports["./client"]` 解析 client 文件、提取 `__ModuleLoader__.load({ id })`，**强制其与包名 `codebuddy-first-bridge` 严格一致**（id 不匹配会触发 client-modules 的 `loaded without registering "<packageName>"`，整个 combo 崩屏）；`prepack` 加强为 `verify + npm test`，发布前跑完整测试套件，热修时的版本断言漂移也不再可能漏到 npm |
 | [v1.1.8](https://github.com/new-256/codebuddy-bridge/releases/tag/v1.1.8) | dsh 0.1.5-rc.1 实测 / 0.1.2-alpha.4+ | **紧急修复 DSH 启动致命屏**：v1.1.7 并入主包后 client.js 的 `__ModuleLoader__.load` 仍写旧独立包名 `id: "codebuddy-indicator"`，与 graph row 以包名注册的 id 不匹配 → client-modules 校验失败 → 整个 client combo 崩溃（`Failed to load plugins`，桌面壳进入安全模式）。id 改为 `codebuddy-first-bridge` |
 | [v1.1.7](https://github.com/new-256/codebuddy-bridge/releases/tag/v1.1.7) | dsh 0.1.3-alpha.2+ / Desktop 0.3.4+ | **家级状态灯改为标准 npm 分发形态**（对齐 agy-first-bridge v1.6.0）：主包 `main` 直指 `home-plugin/codebuddy-indicator/lib/index.mjs`（host 真入口）、`dsh.client.platform: web`（client 半自动纳入花名册）、`dsh.bundle.patch`（安装后自动挂载家级灯）、`bin.codebuddy-mcp-server`；新增 bundle 补丁层，家级灯由裸包名一行加载——不再有 `file://` 行、不再有 client-entry 占位，单实例无二次注册崩溃风险。本机用户层 `cordis.patch.yml` 同步由 `file://...?v=6` 改为裸包名。跨设备安装：`dsh plugin --profile web add codebuddy-first-bridge` |

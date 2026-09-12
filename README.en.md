@@ -175,12 +175,22 @@ codebuddy-first-bridge/
 
 > **Derived-artifact convention**: `dynamic/host.js` and `preset/codebuddy-first/codebuddy-core.mjs` are generated. Change shared logic in `core/`, dynamic adapters in `host.template.mjs`, then run `npm run build` (the sync lock inside `npm test` fails the commit if you forget).
 
+## Compatibility & support statement
+
+Regression-tested against **all 20** published `@deepseek-ai/dsh` versions (0.0.1-rc.1 → 0.1.5-rc.2); the full matrix and evidence live in [docs/COMPATIBILITY.md](docs/COMPATIBILITY.md). Highlights:
+
+- **Preset form (Option A)**: requires **dsh ≥ 0.1.3-alpha.2** (dsh-persona enforces the `prefix:`/`suffix:` schema from that version; older versions expect the legacy `text:` field and reject the preset).
+- **Home-level light via bundle install (Option B)**: `dsh plugin --profile web add codebuddy-first-bridge` works on **all 20 versions** (the plugin CLI / pnpm forwarder / `dsh.bundle.patch` / bundles reconciliation exist since 0.0.1-rc.1). Requires `codebuddy-first-bridge ≥ 1.1.8` (1.1.7's client registration-id mismatch trips a startup fatal screen on **every** dsh version).
+- **MCP server (Option D)**: zero-dependency standalone process, independent of the dsh version.
+- When a new dsh version ships, re-run the regression via `npm run compat:dsh` (see [docs/RELEASE-SOP.md](docs/RELEASE-SOP.md) §3).
+
 ## Versions & releases
 
-Semantic versioning via `package.json` + Git tags + GitHub Releases (see [docs/CHANGELOG.md](docs/CHANGELOG.md)):
+Semantic versioning via `package.json` + Git tags + GitHub Releases; per-version npm↔git content audit via `npm run audit:npm` (also wired into CI; see [docs/CHANGELOG.md](docs/CHANGELOG.md)):
 
 | Version | DSH compat | Highlights |
 | --- | --- | --- |
+| [v1.1.10](https://github.com/new-256/codebuddy-bridge/releases/tag/v1.1.10) | see support statement (all-version regression) | **Engineering: sync audit + all-version regression + support statement + handover docs**: adds `audit-npm-sync.mjs` (per-published-version npm tarball ↔ git tag tree file-by-file sha256, comparing raw commit bytes via `git -c core.autocrlf=false archive`; verdict: 1.1.6–1.1.9 have zero content drift) and `dsh-compat.mjs` (7 contract probes over all 20 dsh versions + sandboxed real install tests); new docs `COMPATIBILITY.md` / `RELEASE-SOP.md` / `HANDOVER.md`; CI gains an npm↔git audit job; CRLF normalization + `.gitattributes` (`* text=auto eol=lf`) so tarballs and tags are byte-identical from 1.1.10 on |
 | [v1.1.9](https://github.com/new-256/codebuddy-bridge/releases/tag/v1.1.9) | dsh 0.1.5-rc.1 verified / 0.1.2-alpha.4+ | **Release-gate hardening (prevents the v1.1.8 incident class)**: `verify.mjs` statically checks the client registration id — it resolves the client file from `exports["./client"]`, extracts `__ModuleLoader__.load({ id })`, and **requires it to equal the package name `codebuddy-first-bridge`** (a mismatch trips client-modules' `loaded without registering "<packageName>"` and crashes the whole combo). `prepack` is strengthened to `verify + npm test`, running the full test suite before publishing, so test-version drift (as happened during the hotfix) can no longer reach npm |
 | [v1.1.8](https://github.com/new-256/codebuddy-bridge/releases/tag/v1.1.8) | dsh 0.1.5-rc.1 verified / 0.1.2-alpha.4+ | **Emergency fix for a DSH startup fatal screen**: after v1.1.7 merged the indicator into the main package, client.js still registered `__ModuleLoader__.load` with the old standalone id `codebuddy-indicator`, which no longer matched the graph row id derived from the package name → client-modules rejected the combo (`Failed to load plugins`, desktop shell entered safe mode). The id is now `codebuddy-first-bridge` |
 | [v1.1.7](https://github.com/new-256/codebuddy-bridge/releases/tag/v1.1.7) | dsh 0.1.3-alpha.2+ / Desktop 0.3.4+ | **The home-level status light now ships in the standard npm distribution shape** (aligned with agy-first-bridge v1.6.0): the main package's `main` points straight at `home-plugin/codebuddy-indicator/lib/index.mjs` (the real host entry), `dsh.client.platform: web` auto-registers the client half in the browser roster, `dsh.bundle.patch` auto-mounts the indicator bundle layer on install, and `bin.codebuddy-mcp-server` is declared. A new bundle patch layer loads the indicator via a single bare-package-name row — no more `file://` row, no more client-entry placeholder, single instance, no double-registration crash. The local user-layer `cordis.patch.yml` was switched from `file://...?v=6` to the bare package name. Cross-device install: `dsh plugin --profile web add codebuddy-first-bridge` |

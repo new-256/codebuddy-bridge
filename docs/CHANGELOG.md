@@ -2,6 +2,27 @@
 
 本项目遵循 [语义化版本](https://semver.org/)；版本号同步 `package.json`、Git tag 与 GitHub Release（`npm run check` 中的 `scripts/verify.mjs` 在 CI 里锁三处一致）。
 
+## [1.1.10] - 2026-09-10
+
+工程化：npm↔git 双侧一致性审计 + dsh 全版本回测 + 支持声明 + 交接文档体系。
+
+### 新增
+
+- **`scripts/audit-npm-sync.mjs`（npm run audit:npm）**：对 npm 上每个已发布版本做逐文件 sha256 比对（tarball vs `git -c core.autocrlf=false archive` 的 tag 树，取原始提交字节防 autocrlf 假阳性），校验 tag 存在性与 tarball 内 name/version 规格。分级输出 IDENTICAL / EOL-ONLY（仅行尾差异，通过但显著标注）/ DRIFT（exit 1）。传输层经 npm CLI（自动重试 + 官方元数据 dist.shasum 校验 + npmmirror 镜像兜底），规避国内直连官方 CDN 的间歇性 ECONNRESET 与 Node fetch 流截断（terminated）。**审计结论：1.1.6–1.1.9 全部版本内容零漂移**，唯一差异为 `docs/ARCHITECTURE.md` 行尾（历史工作区 CRLF 产物，见下）。
+- **`scripts/dsh-compat.mjs`（npm run compat:dsh）**：dsh 全版本兼容性回测。Phase 1 静态探测全部 20 个已发布 `@deepseek-ai/dsh` 版本的 7 个契约点（plugin CLI / pnpm 转发 / `dsh.bundle.patch` 读取 / `dsh.profile.bundles` 对账 / persona schema / client-modules arrive 注册名校验 / `locatePkgJson` graph id 机制）；Phase 2（`--full`）对每个版本做沙箱真实安装回测（隔离 USERPROFILE/APPDATA/LOCALAPPDATA 的 DSH_HOME 沙箱内跑 `dsh plugin --profile web add codebuddy-first-bridge@1.1.9`，验证依赖入列、bundles 层挂载、client 注册 id 契约）。
+- **`docs/COMPATIBILITY.md` 支持声明**：20 版本回测矩阵 + 兼容结论（preset 要求 dsh ≥ 0.1.3-alpha.2；家级灯 bundle 安装全版本支持；1.1.7 类 id 失配在全版本都会崩，1.1.8+ 全版本成立）。
+- **`docs/RELEASE-SOP.md`**：npm/GitHub 提交与维护 SOP（发布流程、npm 认证坑、网络坑、历史坑档案）。
+- **`docs/HANDOVER.md`**：交接文档（项目坐标、架构速览、事故档案、未决事项、新会话上手清单）。
+- CI 新增 **npm↔git sync audit job**（fetch-depth: 0 拉全量 tag，每次 push 自动审计双侧一致性）。
+
+### 修复
+
+- **CRLF 行尾归一化**：`docs/ARCHITECTURE.md`、`assets/indicator-states.svg`、`test/core.test.mjs`、`test/indicator.test.mjs` 四个工作区文件由 CRLF 归一为 LF，并新增 `.gitattributes`（`* text=auto eol=lf`）。根因：npm tarball 打包自工作区字节而 git blob 存 LF，工作区 CRLF 文件会造成 tarball 与 tag 树的行尾漂移（1.1.6–1.1.9 的 ARCHITECTURE.md 属此类；1.1.10 起工作区已归一，未来 tarball 与 tag 字节级一致）。
+
+### 版本一致性基线
+
+- npm 已发布版本：1.1.6 / 1.1.7 / 1.1.8 / 1.1.9，全部有对应 tag（v1.0.0–v1.1.9 共 11 个）与 GitHub Release；audit 全过（EOL-ONLY 4 项已解释归档）。
+
 ## [1.1.9] - 2026-09-11
 
 加固：发布闸门补上 **client 注册 id 必须等于包名** 的静态检查，杜绝 v1.1.7→v1.1.8 同类事故复发。
