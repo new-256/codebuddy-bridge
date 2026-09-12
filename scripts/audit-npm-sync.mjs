@@ -127,7 +127,9 @@ function sha256(p) {
 }
 
 async function main() {
-  const versions = npmJson(['view', NAME, 'versions', '--json'], root)
+  // --prefer-online：刚发布的版本若命中 npm 本地缓存会看不到（实测发布后立即审计
+  // 仍显示旧版本列表），CI 里同样是新 tag 刚推、需要最新元数据。
+  const versions = npmJson(['view', NAME, 'versions', '--json', '--prefer-online'], root)
   if (!Array.isArray(versions) || versions.length === 0) throw new Error('npm view 未返回版本列表')
 
   console.log(`audit: ${NAME} npm 已发布 ${versions.length} 个版本`)
