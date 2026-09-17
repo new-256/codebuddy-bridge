@@ -2,6 +2,19 @@
 
 本项目遵循 [语义化版本](https://semver.org/)；版本号同步 `package.json`、Git tag 与 GitHub Release（`npm run check` 中的 `scripts/verify.mjs` 在 CI 里锁三处一致）。
 
+## [1.1.11] - 2026-09-18
+
+工程化修补：两个发布/回测工具的**观测准确性**修复——审计刚发布的版本不再被 npm 本地缓存遮蔽，回测汇总不再把「功能失败」并入「未回测」。两者都是 v1.1.10 引入脚本后的实测反馈修，不涉及插件运行时行为。
+
+### 修复
+
+- **`scripts/audit-npm-sync.mjs`：版本列表加 `--prefer-online`**。`npm view <pkg> versions` 会命中 npm 本地元数据缓存，导致**刚 `npm publish` 完立刻审计仍只看到旧版本列表**（实测），审计看上去「少了最新版」；CI 里同样是新 tag 刚推、需要最新元数据。加 `--prefer-online` 强制回源取版本清单（仅版本列表回源，tarball 传输层不动，镜像兜底与 shasum 校验照旧）。
+- **`scripts/dsh-compat.mjs`：回测汇总单列「功能失败」**。此前汇总按 `pass / skip / pending` 分档，`functional.ok === false` 的**真实功能失败**被算进 `untested`，与「根本没跑过」混为一谈——20 版本回测中 7 个「CLI 环境不兼容」的失败行口径不准确。现在 `untested = 总数 − pass − failed − skip − pending`，并把 `功能失败 ${failed}` 打进汇总行（与 `docs/COMPATIBILITY.md` §3.1 的「不可安装 / CLI 环境不兼容」分档对齐）。
+
+### 测试
+
+- `npm run check` 全绿：版本四处同步（package.json / MCP VERSION / CHANGELOG 顶部 / `test/mcp.test.mjs` 断言，另同步 `home-plugin/codebuddy-indicator/package.json`）+ verify 闸门 + 74 例测试全过。
+
 ## [1.1.10] - 2026-09-10
 
 工程化：npm↔git 双侧一致性审计 + dsh 全版本回测 + 支持声明 + 交接文档体系。

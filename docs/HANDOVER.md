@@ -1,7 +1,7 @@
 # 交接文档（HANDOVER）
 
 > 本文档面向**下一个维护会话**：接手 codebuddy-first-bridge 的开发与维护。
-> 写于 v1.1.10 发布之际（2026-09-10）。读完本文即可上手，细节按「文档地图」深入。
+> 写于 v1.1.10 发布之际（2026-09-10），v1.1.11（2026-09-18）小幅更新。读完本文即可上手，细节按「文档地图」深入。
 
 ## 1. 项目是什么
 
@@ -17,7 +17,7 @@
 | 工作区 | `C:\Users\lcl\Desktop\codebuddy-bridge` |
 | GitHub | https://github.com/new-256/codebuddy-bridge |
 | npm 包 | `codebuddy-first-bridge`（账号 `luchenglong`，CI 绿） |
-| 当前版本 | 1.1.10（tag/Release/npm 三侧同步，audit 全过） |
+| 当前版本 | 1.1.11（tag/Release/npm 三侧同步，audit 全过） |
 | 姊妹项目 | `agy-first-bridge`（同构，已独立完成 1.6.1 整改，仓库 `C:\Users\lcl\Desktop\agy-first-bridge`） |
 
 ## 2. 文档地图
@@ -73,7 +73,8 @@ slot id `codebuddy-indicator-home` 是另一命名空间，无需与包名一致
 | 2026-09-10 18:08 | **事故爆发**：本机更新到含 1.1.7 的组合 → client combo 崩溃 → `Failed to load plugins` 致命屏 → 桌面壳（dsh-desktop 0.3.36）enterSafeMode 把家级补丁 10 行全注释（safe-mode.json 备份原状） |
 | v1.1.8 | 紧急热修：id 改为包名；教训——npm 先发、git 欠账、test 断言漏 bump |
 | v1.1.9 | 发布闸门加固：verify.mjs 加 client id 静态检查（4 条护栏）+ prepack 升级为 verify + npm test；补齐 1.1.8 的 git 欠账 |
-| v1.1.10 | 本轮：npm↔git 一致性审计（audit 脚本 + CI job，4 版本全过，仅历史 CRLF 行尾差异）+ dsh 20 版本全量回测 + 支持声明 + CRLF 归一化 + .gitattributes + 本交接文档体系 |
+| v1.1.10 | npm↔git 一致性审计（audit 脚本 + CI job，4 版本全过，仅历史 CRLF 行尾差异）+ dsh 20 版本全量回测 + 支持声明 + CRLF 归一化 + .gitattributes + 交接文档体系 |
+| v1.1.11 | 工程化修补：audit 版本列表加 `--prefer-online`（发布后立即审计不再命中 npm 本地缓存）+ compat 汇总单列「功能失败」（不再并入「未回测」）。无运行时行为变更 |
 
 同构整改已在姊妹仓库 agy-first-bridge 完成（v1.6.1：修 id + verify 闸门 + CI 接入 + tag/Release）。
 
@@ -87,9 +88,10 @@ slot id `codebuddy-indicator-home` 是另一命名空间，无需与包名一致
    （`@luchenglong/dsh-session-cleaner` v1.2.1，package.json 声明自己的仓库
    `new-256/dsh-session-cleaner`），不属于本包。**建议移出本工作区、独立建仓维护**，
    避免误提交污染本仓库（npm 侧有 files 白名单保护，不会进包）。
-3. **本机安装升级**：`dsh-home` 里 profile 安装的 codebuddy-first-bridge 仍是 1.1.7+热修
+3. **本机安装升级**：`dsh-home` 里 profile 安装的 codebuddy-first-bridge 曾是 1.1.7+热修
    （profiles/web/node_modules，package.json 报 1.1.7 但 client.js 已被热改）。
-   建议执行 `dsh plugin --profile web add codebuddy-first-bridge@latest` 升到 1.1.10 并重启验证。
+   2026-09-18 已执行 `dsh plugin --profile web add codebuddy-first-bridge@latest` 升到 1.1.11
+   （升级后建议重启 DSH Desktop 并确认状态灯与 `/codebuddy-indicator/status` 正常）。
 4. **本机用户层 `cordis.patch.yml`**：安全模式注释态的家级灯旧行（`# - id: codebuddy-indicator`
    等）**不要取消注释**——现在由 bundle 层（profile 安装）承载，取消注释会变回旧式双行形态，
    有历史双实例风险。
@@ -102,7 +104,7 @@ slot id `codebuddy-indicator-home` 是另一命名空间，无需与包名一致
 ```powershell
 cd C:\Users\lcl\Desktop\codebuddy-bridge
 git status                     # 应干净（除 dsh-session-cleaner/ 未跟踪，见 §6.2）
-git log --oneline -5           # HEAD 应为 v1.1.10 发布提交
+git log --oneline -5           # HEAD 应为 v1.1.11 发布提交
 npm run check                  # 22 项 ok + 74 测试全过
 node scripts/audit-npm-sync.mjs  # npm↔git 全版本一致（1.1.10 起 IDENTICAL）
 ```
