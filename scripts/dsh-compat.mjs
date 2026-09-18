@@ -39,7 +39,7 @@ const DSH = '@deepseek-ai/dsh'
 const PERSONA = '@deepseek-ai/dsh-persona'
 const CLIENT_MODULES = '@deepseek-ai/dsh-client-modules'
 const PROBE_PKG = 'codebuddy-first-bridge'
-const PROBE_VER = '1.1.9'
+const PROBE_VER = '1.1.11'
 
 // ── npm CLI 解析与传输（Windows .cmd shim 不可直接 spawn，见 audit 脚本） ──
 function resolveNpmCli() {
@@ -173,7 +173,7 @@ function staticProbe(v, manifest) {
 }
 
 // ── Phase 2：沙箱功能回测（真实 `dsh plugin --profile web add`） ──────────
-function functionalProbe(row) {
+function functionalProbe(row, publishedIso) {
   const sb = mkdtempSync(join(tmpdir(), 'dsh-fn-'))
   const checks = {}
   try {
@@ -191,12 +191,28 @@ function functionalProbe(row) {
     let installErrText = ''
     // 镜像优先：国内直连官方 CDN 会间歇 stall/ECONNRESET（本项目历史上反复踩到），
     // npmmirror 是官方镜像、包内容经 integrity/shasum 校验逐字节等价，仅传输更快。
-    // --legacy-peer-deps 放第一顺位：2026-08 上半月的 rc 版本 peer 依赖组合在今天
-    // 的 npm 下会解析卡死（实测 0.1.0-rc.2/rc.3 前两次尝试各 480s 超时），该标志
-    // 只放宽 peer 冲突判定，不影响实际装出的包内容。后两次为常规兜底。
+    // ── v1.1.12 修复（2026-09-18，两处实测根因）─────────────────────────
+    // ① 移除 --legacy-peer-deps：dsh-app-boot 自 0.1.5-rc.2 起把
+    //    @deepseek-ai/cordis-plugin-group 等插件包声明为【运行时必需的 peer
+    //    dependencies】；--legacy-peer-deps 让 npm 跳过 peer 安装却仍返回成功
+    //    （exit 0）→ 第一顺位「成功」后兜底不再执行 → 沙箱得到缺 peer、无法
+    //    boot 的 dsh 环境（实测 22 个版本全部在 dsh-app-boot 导入处
+    //    ERR_MODULE_NOT_FOUND，与所装插件无关）。
+    // ② 加 --before=<发布时间> 时间锚定：dsh 内部组件互相以 ^0.1.x-yyy 的
+    //    caret 范围引用，0.1.6-alpha.1/.2（2026-09-15/17）发布后，安装任何
+    //    历史版本都会解析进 0.1.6-alpha.x 组件形成【混合树】，结果随上游
+    //    发版漂移、不可复现。--before 让 npm 只取发布时间点及以前存在的
+    //    版本，树构成与发布时代一致（实测 0.1.5-rc.2 锚定后 dsh-app-boot
+    //    等内部组件全部回落到 0.1.5-rc.2 且 peer 齐全、可直接 boot）。
+    // +1 天缓冲：--before 语义是「取 ≤ 该时刻的版本」，版本自身 publish 时间恰为
+    // 边界时（同秒发布）个别 npm 版本可能把它排除，缓冲一天确保目标版本自身必被
+    // 纳入，且不会引入隔天无关组件（dsh 各版本发布间隔以天计）。
+    const beforeFlag = publishedIso
+      ? [`--before=${new Date(new Date(publishedIso).getTime() + 86400000).toISOString()}`]
+      : []
     const installAttempts = [
-      ['--fetch-retries=5', `--registry=${MIRROR}`, '--legacy-peer-deps'],
-      ['--fetch-retries=5', `--registry=${MIRROR}`],
+      ['--fetch-retries=5', `--registry=${MIRROR}`, ...beforeFlag],
+      ['--fetch-retries=5', ...beforeFlag],
       ['--fetch-retries=5'],
     ]
     for (const extra of installAttempts) {
@@ -260,7 +276,7 @@ function functionalProbe(row) {
         stdio: ['ignore', 'ignore', 'pipe'],
       })
     } catch (e) {
-      stderr = (e.stderr && e.stderr.toString() || '').slice(-800)
+      stderr = (e.stderr && e.stderr.toString() || '').slice(0, 2000)
       throw new Error('plugin add 失败: ' + stderr)
     }
 
@@ -295,7 +311,7 @@ function functionalProbe(row) {
     if (failed.length) throw new Error('检查未过: ' + failed.map(([k]) => k).join(', '))
     row.functional = { ok: true, checks }
   } catch (e) {
-    row.functional = { ok: false, error: e.message.slice(0, 300), checks }
+    row.functional = { ok: false, error: e.message.slice(0, 3000), checks }
   } finally {
     rmSync(sb, { recursive: true, force: true })
   }
@@ -344,7 +360,7 @@ async function main() {
     row.published = times[v] ? String(times[v]).slice(0, 10) : '?'
     if (full && row.probes.pluginCmd) {
       process.stdout.write(`  回测 ${v} … `)
-      functionalProbe(row)
+      functionalProbe(row, times[v])
       console.log(row.functional.ok
         ? 'PASS'
         : (row.functional.skipped

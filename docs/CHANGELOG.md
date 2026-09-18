@@ -2,6 +2,25 @@
 
 本项目遵循 [语义化版本](https://semver.org/)；版本号同步 `package.json`、Git tag 与 GitHub Release（`npm run check` 中的 `scripts/verify.mjs` 在 CI 里锁三处一致）。
 
+## [1.1.12] - 2026-09-18
+
+工程化修补：修复 `dsh-compat.mjs` 功能回测基线的两处真实缺陷，并把兼容矩阵从 20 个 dsh 版本扩展到 22 个（新增 `0.1.6-alpha.1` / `0.1.6-alpha.2`）。不涉及插件运行时行为。
+
+### 修复
+
+- **移除 `--legacy-peer-deps`**（`scripts/dsh-compat.mjs`）：`@deepseek-ai/dsh-app-boot` 自 0.1.5-rc.2 起把 `@deepseek-ai/cordis-plugin-group` 等声明为**运行时必需的 peerDependencies**；`--legacy-peer-deps` 让 npm 跳过 peer 安装却仍返回成功（exit 0）——于是「第一顺位成功」后兜底不再执行，沙箱得到一个缺 peer、无法 boot 的 dsh 环境，实测 22 个版本全部在 `dsh-app-boot` 导入处 `ERR_MODULE_NOT_FOUND`（与所装插件无关）。
+- **加 `--before=<发布时间>` 时间锚定**：dsh 内部组件互相以 `^0.1.x-rc.y` caret 范围引用；0.1.6-alpha.1/.2（2026-09-15/17 发布）出现后，安装任何历史 dsh 版本都会解析进 0.1.6-alpha.x 组件形成**混合树**，回测结果随上游发版漂移、不可复现。`--before` 让 npm 只取该版本发布时间点及以前存在的版本（另 +1 天缓冲防边界排除），树的构成与发布时代一致。
+- **`PROBE_VER` 1.1.9 → 1.1.11**：功能回测安装的探测包版本对齐当前已发布版本。
+
+### 兼容声明更新
+
+- `docs/COMPATIBILITY.md`：20 → 22 版本，新增 `0.1.6-alpha.1`（2026-09-15）/ `0.1.6-alpha.2`（2026-09-17）两行，矩阵与分档按修复后的基线重跑。
+- **更正 v1.1.10 的「CLI 环境不兼容」结论**：重跑后 `0.1.0-rc.*` / `0.1.1-rc.*` 旧版本**全部通过**，最终汇总 **PASS 17 / 功能失败 0 / 不可安装 2（E404 平台事实）/ 待重跑 3（瞬时网络超时）**。原「旧 CLI 与现代 Node ESM 不兼容」的归因随撤回（见 COMPATIBILITY §3.3）。
+
+### 测试
+
+- `npm run check` 全绿：版本四处同步（package.json / MCP VERSION / CHANGELOG 顶部 / `test/mcp.test.mjs` 断言，另同步 `home-plugin/codebuddy-indicator/package.json`）+ verify 闸门 + 74 例测试全过。
+
 ## [1.1.11] - 2026-09-18
 
 工程化修补：两个发布/回测工具的**观测准确性**修复——审计刚发布的版本不再被 npm 本地缓存遮蔽，回测汇总不再把「功能失败」并入「未回测」。两者都是 v1.1.10 引入脚本后的实测反馈修，不涉及插件运行时行为。
