@@ -91,12 +91,12 @@ slot id `codebuddy-indicator-home` 是另一命名空间，无需与包名一致
    避免误提交污染本仓库（npm 侧有 files 白名单保护，不会进包）。
 3. **本机安装升级**：`dsh-home` 里 profile 安装的 codebuddy-first-bridge 曾是 1.1.7+热修
    （profiles/web/node_modules，package.json 报 1.1.7 但 client.js 已被热改）。
-   2026-09-18 已执行 `dsh plugin --profile web add codebuddy-first-bridge@latest` 升到 1.1.11
+   2026-09-18 已执行 `dsh plugin --profile web add codebuddy-first-bridge@latest` 升到 1.1.12
    （升级后建议重启 DSH Desktop 并确认状态灯与 `/codebuddy-indicator/status` 正常）。
 4. **本机用户层 `cordis.patch.yml`**：安全模式注释态的家级灯旧行（`# - id: codebuddy-indicator`
    等）**不要取消注释**——现在由 bundle 层（profile 安装）承载，取消注释会变回旧式双行形态，
    有历史双实例风险。
-5. **回测数据**：`%TEMP%\dsh-compat-cache\dsh-compat-result.json`（20 版本明细）已随本交接
+5. **回测数据**：`%TEMP%\dsh-compat-cache\dsh-compat-result.json`（22 版本明细）已随本交接
    打包归档（见桌面 handover 包）；Temp 目录会被系统清理，长期数据以 COMPATIBILITY.md 内的
    矩阵为准。
 
@@ -105,7 +105,7 @@ slot id `codebuddy-indicator-home` 是另一命名空间，无需与包名一致
 ```powershell
 cd C:\Users\lcl\Desktop\codebuddy-bridge
 git status                     # 应干净（除 dsh-session-cleaner/ 未跟踪，见 §6.2）
-git log --oneline -5           # HEAD 应为 v1.1.11 发布提交
+git log --oneline -5           # HEAD 应为 v1.1.12 发布提交
 npm run check                  # 22 项 ok + 74 测试全过
 node scripts/audit-npm-sync.mjs  # npm↔git 全版本一致（1.1.10 起 IDENTICAL）
 ```
