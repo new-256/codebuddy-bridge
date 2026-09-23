@@ -4,7 +4,7 @@
 // 另校验 preset 组合的结构要素（bridge 行存在且指向正确文件、preset.yml 有名称描述），
 // 防止「YAML 宽容 loader 连 id/name 写错也放行」的漂移。
 
-import { readFileSync } from 'node:fs'
+import { readFileSync, existsSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import { dirname, join } from 'node:path'
 
@@ -42,6 +42,23 @@ check('agent.cordis.yml has persona row', personaBlock >= 0)
 check('agent.cordis.yml persona uses prefix (required since dsh 0.1.3-alpha.2)', /^\s+prefix:/m.test(personaSlice))
 check('agent.cordis.yml persona declares suffix', /^\s+suffix:/m.test(personaSlice))
 check('agent.cordis.yml persona has NO legacy text: field', !/^\s+text:/m.test(personaSlice))
+
+// v1.2.0：preset 声明式注册的结构闸门。新 DSH（≥0.1.7-alpha.1）Form-A 走声明制，
+// 声明定义在 home-plugin/codebuddy-indicator/lib/preset-definition.mjs（由 indicator
+// 自注册），本节锁住它的结构要素：存在、id 一致、桥接行裸说明符、__jsExpr 等价、
+// 官方行数、exports 子路径存在。
+const defSrc = readFileSync(join(root, 'home-plugin', 'codebuddy-indicator', 'lib', 'preset-definition.mjs'), 'utf8')
+check('preset-definition.mjs exists', defSrc.length > 0)
+check('preset-definition declares PRESET_ID codebuddy-first', /export const PRESET_ID = 'codebuddy-first'/.test(defSrc))
+check('preset-definition bridge row uses bare specifier', /codebuddy-first-bridge\/preset-bridge/.test(defSrc))
+check('preset-definition has no relative bridge anchor (registry baseUrl pitfall)', !/name:\s*['"]\.\//.test(defSrc))
+const jsExprCount = (defSrc.match(/__jsExpr/g) || []).length
+check('preset-definition carries 2 __jsExpr nodes (tool-bash/tool-pwsh platform gates)', jsExprCount >= 2)
+const defRowIds = [...defSrc.matchAll(/\{ id: '([a-z0-9-]+)'/g)].map((m) => m[1])
+check('preset-definition ports official standard rows (>= 27 rows incl. groups/bridge)', defRowIds.length >= 27)
+check('preset-definition has bridge row last', defRowIds[defRowIds.length - 1] === 'codebuddy-first-bridge')
+check('package.json exports ./preset-bridge subpath', pkg.exports && pkg.exports['./preset-bridge'] === './preset/codebuddy-first/codebuddy-first-bridge.mjs')
+check('bridge preset entry exists on disk', existsSync(join(root, 'preset', 'codebuddy-first', 'codebuddy-first-bridge.mjs')))
 
 const presetYml = readFileSync(join(root, 'preset', 'codebuddy-first', 'preset.yml'), 'utf8')
 check('preset.yml declares name', /^name:\s*\S+/m.test(presetYml))

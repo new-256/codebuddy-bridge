@@ -42,13 +42,18 @@
 
 ### 方式 A：作为持久 Agent Preset 安装（推荐）
 
+> **v1.2.0 起推荐方式 B 一并安装**（`dsh plugin --profile web add codebuddy-first-bridge`）：
+> 方式 A 的注册通道已并入状态灯插件——新 DSH（≥ 0.1.7-alpha.1）上 preset 由 indicator 自动向
+> `agentPresets` 注册表登记（声明制），旧 DSH（≤ 0.1.6-alpha.2）上沿用目录式安装。两种 DSH
+> 都是装完方式 B 后开箱即用；下面的目录复制步骤仅旧 DSH 需要。
+
 **方式 A1 — npm 安装（v1.1.6 起支持）**：
 
 ```powershell
 npm install -g codebuddy-first-bridge
 ```
 
-包内 `preset/codebuddy-first/` 即为完整 preset（含 `agent.cordis.yml`、`preset.yml` 与自包含的 bridge 模块）。把该目录复制到你的 DSH 用户 preset 根目录后即可选择：
+包内 `preset/codebuddy-first/` 即为完整 preset（含 `agent.cordis.yml`、`preset.yml` 与自包含的 bridge 模块）。把该目录复制到你的 DSH 用户 preset 根目录后即可选择（**仅 dsh ≤ 0.1.6-alpha.2 需要**；0.1.7-alpha.1 起目录式 preset 不再被读取，preset 由方式 B 的 indicator 插件自动注册）：
 
 ```powershell
 $presetDir = (Get-ChildItem (npm root -g) -Recurse -Directory -Filter codebuddy-first | Select-Object -First 1).FullName
@@ -207,10 +212,10 @@ codebuddy-first-bridge/
 
 ## 兼容性与支持声明
 
-对 npm 上**全部 20 个**已发布 `@deepseek-ai/dsh` 版本（0.0.1-rc.1 → 0.1.5-rc.2）做过回测，完整矩阵与证据见 [docs/COMPATIBILITY.md](docs/COMPATIBILITY.md)。结论速览：
+对 npm 上**全部 26 个**已发布 `@deepseek-ai/dsh` 版本（0.0.1-rc.1 → 0.1.7-rc.1）做过探测/回测，完整矩阵与证据见 [docs/COMPATIBILITY.md](docs/COMPATIBILITY.md)。结论速览：
 
-- **preset 形态（方式 A）**：要求 **dsh ≥ 0.1.3-alpha.2**（dsh-persona 的 `prefix:`/`suffix:` schema 从该版本起强制；更早版本用旧 `text:` 字段会拒绝挂载）。
-- **家级状态灯 bundle 安装（方式 B）**：`dsh plugin --profile web add codebuddy-first-bridge` **全 20 个版本可用**（plugin CLI / pnpm 转发 / `dsh.bundle.patch` / bundles 对账自 0.0.1-rc.1 即存在）。要求 `codebuddy-first-bridge ≥ 1.1.8`（1.1.7 的 client 注册 id 失配会在**所有** dsh 版本上触发启动致命屏）。
+- **preset 形态（方式 A）**：**全版本可用（v1.2.0 修复）**——dsh ≤ 0.1.6-alpha.2 走目录制 preset（`dsh ≥ 0.1.3-alpha.2` 起强制 persona `prefix:`/`suffix:` schema）；dsh ≥ 0.1.7-alpha.1 起目录式 preset 不再被读取（目录制 → 声明制切换），preset 由状态灯插件（方式 B）向 `agentPresets` 注册表自动登记。**新 DSH 上方式 A 需与方式 B 一并安装**。
+- **家级状态灯 bundle 安装（方式 B）**：`dsh plugin --profile web add codebuddy-first-bridge` **全 26 个版本可用**（plugin CLI / pnpm 转发 / `dsh.bundle.patch` / bundles 对账自 0.0.1-rc.1 即存在）。要求 `codebuddy-first-bridge ≥ 1.1.8`（1.1.7 的 client 注册 id 失配会在**所有** dsh 版本上触发启动致命屏）。
 - **MCP server（方式 D）**：零依赖独立进程，与 dsh 版本无关。
 - 新 dsh 版本发布后可用 `npm run compat:dsh` 重新回测（详见 [docs/RELEASE-SOP.md](docs/RELEASE-SOP.md) §3）。
 
@@ -220,6 +225,7 @@ codebuddy-first-bridge/
 
 | 版本 | 适配 DSH | 内容 |
 | --- | --- | --- |
+| [v1.2.0](https://github.com/new-256/codebuddy-bridge/releases/tag/v1.2.0) | dsh 0.1.7-rc.1 真机实测 / 全版本（26 版本矩阵） | **Form-A 修复：新 DSH（≥ 0.1.7-alpha.1）preset 静默失效**——dsh 0.1.7-alpha.1 起 preset 从目录制（`.agent-presets/`）切为**声明制**（运行时向 `agentPresets` 注册表登记），旧目录不再被读取，方式 A 装上即失效且无报错。修复 = **indicator 自注册声明**：状态灯插件 `apply()` 里 `ctx.inject(['agentPresets'])` 等注册表出现后 `register(definition)`（官方 standard preset 全量移植 + 桥接行；旧 DSH 上注入器挂起零副作用，不新增任何 loader 行——旧 loader 对导入失败是致命的）。桥接行用裸说明符子路径 `codebuddy-first-bridge/preset-bridge`（注册表以自身 baseUrl 解析相对名，相对路径必然指错）。真机验证：本地 tarball 走真实 `dsh plugin add` 安装 + boot，roster 探针确认 `codebuddy-first` 与官方四个 preset 并列、无 broken。兼容矩阵 22 → 26 版本（新增 C8 声明制契约探针 + 0.1.5-rc.3 / 0.1.7-alpha.1/.2 / 0.1.7-rc.1） |
 | [v1.1.12](https://github.com/new-256/codebuddy-bridge/releases/tag/v1.1.12) | 见支持声明（22 版本回测） | **工程化修补：dsh 全版本回测基线修复 + 矩阵扩展至 22 版本**（不涉及插件运行时行为）——① 移除 `--legacy-peer-deps`（会跳过 dsh-app-boot 运行时必需的 peerDependencies，导致沙箱 dsh 环境缺 peer 无法 boot）；② 加 `--before=<发布时间>` 时间锚定（防内部组件 caret 范围把 0.1.6-alpha.x 拉进历史版本形成混合树）；③ `PROBE_VER` 对齐 1.1.11。`docs/COMPATIBILITY.md` 新增 0.1.6-alpha.1/.2 两行并重跑矩阵 |
 | [v1.1.11](https://github.com/new-256/codebuddy-bridge/releases/tag/v1.1.11) | 见支持声明（全版本回测） | **工程化修补：两个发布/回测工具的观测准确性**（不涉及插件运行时行为）——① `audit-npm-sync.mjs` 取版本列表加 `--prefer-online`：`npm view <pkg> versions` 会命中 npm 本地元数据缓存，导致刚 `npm publish` 完立刻审计仍只见旧版本列表（实测；CI 新 tag 刚推时同理）；② `dsh-compat.mjs` 汇总单列 **功能失败**：此前 `functional.ok === false` 的真实失败被算进 `untested`，与「根本没跑过」混为一谈（20 版本回测中 7 个「CLI 环境不兼容」行口径不准），现在 `untested = 总数 − pass − failed − skip − pending` 并与 COMPATIBILITY §3.1 分档对齐 |
 | [v1.1.10](https://github.com/new-256/codebuddy-bridge/releases/tag/v1.1.10) | 见支持声明（全版本回测） | **工程化：一致性审计 + 全版本回测 + 支持声明 + 交接文档**：新增 `audit-npm-sync.mjs`（npm 每个已发布版本 ↔ git tag 树逐文件 sha256 比对，`git -c core.autocrlf=false` 取原始字节；审计结论 1.1.6–1.1.9 内容零漂移）与 `dsh-compat.mjs`（20 个 dsh 版本 7 契约点静态探测 + 沙箱真实安装回测）；`docs/COMPATIBILITY.md` 支持声明、`docs/RELEASE-SOP.md` 发布维护 SOP、`docs/HANDOVER.md` 交接文档；CI 增 npm↔git audit job；CRLF 归一化 + `.gitattributes`（`* text=auto eol=lf`），1.1.10 起 tarball 与 tag 字节级一致 |

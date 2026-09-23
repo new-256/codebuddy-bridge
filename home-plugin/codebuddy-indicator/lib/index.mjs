@@ -35,6 +35,11 @@
 //
 // 路由返回 JSON：{ state, running, projects[], presetActive, presetSessions[], lastModeAt }。
 
+// v1.2.0：preset 声明式注册（Form-A 修复）。新 DSH（≥0.1.7-alpha.1）preset 走
+// 声明制、目录式 preset 不再被读取；由 indicator 向 agentPresets 注册表登记
+// codebuddy-first preset（官方 standard 全量 + 桥接行）。机制详见 ./preset-definition.mjs。
+import { declareCodebuddyFirstPreset } from './preset-definition.mjs'
+
 export const PRESET_TTL_MS = 75000
 export const PRESET_ID = 'codebuddy-first'
 
@@ -271,6 +276,15 @@ export function apply(ctx) {
       lastBridgeStamp = stamp
     } catch (e) { }
   }
+
+  // v1.2.0：Form-A 修复 —— 新 DSH（≥0.1.7-alpha.1）preset 走声明制，目录式
+  // preset 不再被读取；indicator 以自身为载体向 agentPresets 注册表登记
+  // codebuddy-first preset（官方 standard 全量 + 桥接行）。旧 DSH 上
+  // agentPresets 永不出现，注入器挂起无副作用（loader 不收集等待中的注入器）。
+  // 详见 ./preset-definition.mjs 头注。
+  try {
+    declareCodebuddyFirstPreset(ctx)
+  } catch (e) { /* 注册通道任何异常都不能影响状态灯本业 */ }
 
   if (typeof ctx.inject === 'function') {
     ctx.inject(['webServer'], (webCtx) => {

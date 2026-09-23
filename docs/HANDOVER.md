@@ -1,7 +1,7 @@
 # 交接文档（HANDOVER）
 
 > 本文档面向**下一个维护会话**：接手 codebuddy-first-bridge 的开发与维护。
-> 写于 v1.1.10 发布之际（2026-09-10），v1.1.11 / v1.1.12（2026-09-18）小幅更新。读完本文即可上手，细节按「文档地图」深入。
+> 写于 v1.1.10 发布之际（2026-09-10），v1.1.11 / v1.1.12（2026-09-18）、**v1.2.0（2026-09-24，Form-A 声明制修复）**更新。读完本文即可上手，细节按「文档地图」深入。
 
 ## 1. 项目是什么
 
@@ -17,7 +17,7 @@
 | 工作区 | `C:\Users\lcl\Desktop\codebuddy-bridge` |
 | GitHub | https://github.com/new-256/codebuddy-bridge |
 | npm 包 | `codebuddy-first-bridge`（账号 `luchenglong`，CI 绿） |
-| 当前版本 | 1.1.12（tag/Release/npm 三侧同步，audit 全过） |
+| 当前版本 | 1.2.0（tag/Release/npm 三侧同步，audit 全过；Form-A 声明制修复版） |
 | 姊妹项目 | `agy-first-bridge`（同构，已独立完成 1.6.1 整改，仓库 `C:\Users\lcl\Desktop\agy-first-bridge`） |
 
 ## 2. 文档地图
@@ -38,16 +38,27 @@
 ```
 codebuddy-first-bridge
 ├── preset/codebuddy-first/          ① Agent preset 形态（方式 A）
-│   ├── agent.cordis.yml             # bridge 行 + persona 行（prefix/suffix）
+│   ├── agent.cordis.yml             # bridge 行 + persona 行（prefix/suffix）——旧 DSH（≤0.1.6-alpha.2）目录制
 │   ├── preset.yml
 │   └── codebuddy-first-bridge.mjs   # 会话内插件：codebuddy 优先派发 + 限流回退
 ├── home-plugin/codebuddy-indicator/ ② 家级状态灯（方式 B，v1.1.7 并入主包分发）
 │   ├── cordis.patch.yml             # bundle 补丁层（id: codebuddy-indicator / name: codebuddy-first-bridge）
-│   ├── lib/index.mjs                # host 半：codebuddyCollector 服务 + /codebuddy-indicator/status 端点
+│   ├── lib/index.mjs                # host 半：collector 服务 + /status 端点 + v1.2.0 preset 声明注册
+│   ├── lib/preset-definition.mjs    # v1.2.0：声明制 preset 定义（新 DSH ≥0.1.7-alpha.1 的方式 A 通道）
 │   └── lib/client.js                # client 半：__ModuleLoader__.load({ id: "codebuddy-first-bridge" }) ←⚠ 契约
 ├── dynamic/                         ③ 动态 Cordis 插件形态（方式 C，host.js/client.js 函数体）
 └── mcp/codebuddy-mcp-server.mjs     ④ MCP server（零依赖，bin: codebuddy-mcp-server）
 ```
+
+**v1.2.0 的关键机制（方式 A 双通道）**：dsh 0.1.7-alpha.1 起 preset 从目录制切为**声明制**
+（`.agent-presets/` 不再被读取，方式 A 曾静默失效）。现在方式 A 有两条通道：
+旧 DSH 走目录制（上面的 preset 目录），新 DSH 走**声明制**——indicator `apply()` 里
+`ctx.inject(['agentPresets'])` 等注册表服务出现后 `register(buildPresetDefinition())`
+（官方 standard 全量移植 + 桥接行，桥接行 name 用裸说明符子路径
+`codebuddy-first-bridge/preset-bridge`，经 package.json `exports` 解析——注册表以**自身**
+baseUrl 解析相对名，相对路径必然指错）。旧 DSH 上 `agentPresets` 永不出现，注入器挂起
+零副作用。真机验证（0.1.7-rc.1）：roster 探针确认 `codebuddy-first` 与官方四个 preset
+并列、无 broken。详见 COMPATIBILITY.md §6。
 
 **最核心的契约**（v1.1.8 事故根因，verify.mjs 已锁死）：
 `home-plugin/.../client.js` 里 `__ModuleLoader__.load({ id })` 的 id **必须等于主包名**
@@ -59,7 +70,7 @@ slot id `codebuddy-indicator-home` 是另一命名空间，无需与包名一致
 
 **一切按 [RELEASE-SOP.md](RELEASE-SOP.md) 执行**，要点速记：
 
-- `npm run check` 全绿（verify 22 项 + 74 测试）→ commit → tag → push → Release → publish → audit；
+- `npm run check` 全绿（verify 闸门 + 85 测试）→ commit → tag → push → Release → publish → audit；
 - npm 认证必须命令行显式 `--//registry.npmjs.org/:_authToken=<TOKEN>`（token 由所有者提供，
   绝不入文件）；
 - dsh 发新版本后：`node scripts/dsh-compat.mjs --full` 回测 → 更新 COMPATIBILITY.md。
@@ -76,6 +87,7 @@ slot id `codebuddy-indicator-home` 是另一命名空间，无需与包名一致
 | v1.1.10 | npm↔git 一致性审计（audit 脚本 + CI job，4 版本全过，仅历史 CRLF 行尾差异）+ dsh 20 版本全量回测 + 支持声明 + CRLF 归一化 + .gitattributes + 交接文档体系 |
 | v1.1.11 | 工程化修补：audit 版本列表加 `--prefer-online`（发布后立即审计不再命中 npm 本地缓存）+ compat 汇总单列「功能失败」（不再并入「未回测」）。无运行时行为变更 |
 | v1.1.12 | 工程化修补：dsh-compat.mjs 移除 `--legacy-peer-deps`（跳过运行时必需 peer → 沙箱无法 boot）+ 加 `--before` 时间锚定（防 caret 漂移混合树）+ PROBE_VER 对齐 1.1.11；COMPATIBILITY 扩至 22 版本（新增 0.1.6-alpha.1/.2）。无运行时行为变更 |
+| v1.2.0 | **Form-A 修复**：dsh 0.1.7-alpha.1 起 preset 目录制 → 声明制切换，`.agent-presets/` 不再被读取，方式 A 在新 DSH 上静默失效。修复 = indicator 自注册声明（`lib/preset-definition.mjs`：官方 standard 全量移植 + 裸说明符桥接行；`ctx.inject(['agentPresets'])` 等待器；旧 DSH 挂起零副作用）。verify 新增 9 项声明结构护栏 + `test/preset-declaration.test.mjs` 11 例（含与已装官方 standard.patch.yml 的逐行 drift 比对）。真机验证（0.1.7-rc.1 本地 tarball 真实 plugin add + boot + roster 探针）全过。矩阵 22 → 26 版本（+C8 声明制契约点） |
 
 同构整改已在姊妹仓库 agy-first-bridge 完成（v1.6.1：修 id + verify 闸门 + CI 接入 + tag/Release）。
 
@@ -91,23 +103,28 @@ slot id `codebuddy-indicator-home` 是另一命名空间，无需与包名一致
    避免误提交污染本仓库（npm 侧有 files 白名单保护，不会进包）。
 3. **本机安装升级**：`dsh-home` 里 profile 安装的 codebuddy-first-bridge 曾是 1.1.7+热修
    （profiles/web/node_modules，package.json 报 1.1.7 但 client.js 已被热改）。
-   2026-09-18 已执行 `dsh plugin --profile web add codebuddy-first-bridge@latest` 升到 1.1.12
-   （升级后建议重启 DSH Desktop 并确认状态灯与 `/codebuddy-indicator/status` 正常）。
+   2026-09-18 已执行 `dsh plugin --profile web add codebuddy-first-bridge@latest` 升到 1.1.12；
+   **v1.2.0 发布后需再升一次**（声明制 preset 注册在 1.2.0 的 indicator 里，1.1.12 在
+   0.1.7-rc.1 后端上方式 A 仍失效）。
 4. **本机用户层 `cordis.patch.yml`**：安全模式注释态的家级灯旧行（`# - id: codebuddy-indicator`
    等）**不要取消注释**——现在由 bundle 层（profile 安装）承载，取消注释会变回旧式双行形态，
    有历史双实例风险。
-5. **回测数据**：`%TEMP%\dsh-compat-cache\dsh-compat-result.json`（22 版本明细）已随本交接
+5. **回测数据**：`%TEMP%\dsh-compat-cache\dsh-compat-result.json`（26 版本明细）已随本交接
    打包归档（见桌面 handover 包）；Temp 目录会被系统清理，长期数据以 COMPATIBILITY.md 内的
    矩阵为准。
+6. **姊妹项目同病**：`agy-first-bridge`（v1.7.0）的 preset 形态同样是目录制交付，在
+   dsh ≥ 0.1.7-alpha.1 上会静默失效——需要同款「indicator 自注册声明」修复
+   （参照本仓库 `home-plugin/codebuddy-indicator/lib/preset-definition.mjs` +
+   `test/preset-declaration.test.mjs` 的模式移植）。
 
 ## 7. 新会话快速上手（5 分钟）
 
 ```powershell
 cd C:\Users\lcl\Desktop\codebuddy-bridge
 git status                     # 应干净（除 dsh-session-cleaner/ 未跟踪，见 §6.2）
-git log --oneline -5           # HEAD 应为 v1.1.12 发布提交
-npm run check                  # 22 项 ok + 74 测试全过
-node scripts/audit-npm-sync.mjs  # npm↔git 全版本一致（1.1.10 起 IDENTICAL）
+git log --oneline -5           # HEAD 应为 v1.2.0 发布提交
+npm run check                  # verify（含 9 项声明结构护栏）+ 85 测试全过
+node scripts/audit-npm-sync.mjs  # npm↔git 全版本一致
 ```
 
 然后按任务性质查文档：发布/维护 → RELEASE-SOP；兼容性问题 → COMPATIBILITY；

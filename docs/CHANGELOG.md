@@ -2,6 +2,31 @@
 
 本项目遵循 [语义化版本](https://semver.org/)；版本号同步 `package.json`、Git tag 与 GitHub Release（`npm run check` 中的 `scripts/verify.mjs` 在 CI 里锁三处一致）。
 
+## [1.2.0] - 2026-09-19
+
+**Form-A 修复**：新 DSH（`@deepseek-ai/dsh` ≥ 0.1.7-alpha.1）上 preset 交付形态（A 形态）静默失效——本版恢复全版本可用，交付形态不变（安装方式/命令零改动）。
+
+### 根因
+
+- DSH 0.1.7-alpha.1 起 preset 从**目录制**（读取 `$DSH_HOME/.agent-presets/<id>/` 的 `preset.yml` + `agent.cordis.yml`）切换为**声明制**：preset 必须由插件在运行时向 `agentPresets` 注册表登记（官方四个 preset 即 dsh-web-app bundle patch 里的 `@deepseek-ai/dsh-agent-preset` 声明行）。旧目录在新 DSH 上**永远不会被读取**——装上即失效，无任何报错。机制边界：目录制 ≤ 0.1.6-alpha.2，声明制 ≥ 0.1.7-alpha.1。
+
+### 修复方案（indicator 自注册声明）
+
+- 新增 `home-plugin/codebuddy-indicator/lib/preset-definition.mjs`：codebuddy-first preset 的声明定义（官方 standard preset 全量移植 + 桥接行）。`plugins` 行序/id/config 与官方 `standard.patch.yml`（0.1.7-rc.1）逐项对齐，仅两处必要差异：末尾追加 `codebuddy-first-bridge` 桥接行（本插件全部增量）；YAML `!!js` 表达式改写为等价 `{ __jsExpr: "…" }` 字面量（loader `interpolate` 一视同仁）。
+- **注册通道 = indicator 自注册**：indicator `apply()` 里 `ctx.inject(['agentPresets'], …)` 等注册表服务出现后调用 `register(definition)`，返回的注销 disposer 登记为 effect（插件卸载/重载时先注销再重注册）。选此通道而非新增声明行的根因：`@deepseek-ai/dsh-agent-preset` 包 0.1.7-alpha.1 才存在，旧 DSH 的 loader（1.0.3）对导入失败**致命**（单声明行失败会炸掉整棵 profile 树）；而 indicator 在全部 26 个已发布 dsh 版本上可加载。旧 DSH 上 `agentPresets` 服务永不出现，注入器按 cordis 语义保持挂起（等待≠失败，loader 不收集等待中的注入器），零副作用。
+- **桥接行 name 用裸说明符子路径** `codebuddy-first-bridge/preset-bridge`（package.json `exports` 新增该子路径）：注册表挂载 preset 插件时以**注册表自身的 baseUrl**（dsh-web-app 包目录）解析相对名，任何相对路径必然指错；裸说明符走 profile 包图路由，与官方行 `@deepseek-ai/dsh-tool-subagent-control/list-agents` 同机制。
+- 失败隔离：`register()` 抛错（如重复 id）仅 `logger.warn`，绝不向宿主树抛出；等待器挂起不参与 loader 的 await 集，不拖慢启动。
+
+### 兼容矩阵
+
+- `scripts/dsh-compat.mjs`：新增 **C8 声明制 preset 探针**（agent-preset-registry 包存在性 + register API + 声明插件包），矩阵新增「声明制 preset」列；`PROBE_VER` → 1.2.0。
+- `docs/COMPATIBILITY.md`：矩阵 22 → 26 版本（新增 `0.1.5-rc.3` / `0.1.7-alpha.1` / `0.1.7-alpha.2` / `0.1.7-rc.1`），Form-A 交付形态拆分为两段声明（目录制 ≤ 0.1.6-alpha.2 / 声明制 ≥ 0.1.7-alpha.1）。
+
+### 测试
+
+- 新增 `test/preset-declaration.test.mjs`（11 例）：定义骨架 / 裸说明符（禁相对与 file:）/ `__jsExpr` 求值语义对拍 / 官方行移植完整性 / **与已装官方 standard.patch.yml 逐行 drift 比对** / 等待器新 DSH 形态（注册 + 注销）/ 旧 DSH 形态（挂起零副作用）/ 注册失败隔离 / 官方 shape 校验等价。
+- `npm run check` 全绿：版本五处同步（package.json / MCP VERSION / CHANGELOG 顶部 / `test/mcp.test.mjs` 断言 / indicator package.json）+ verify 闸门（新增 9 项声明结构检查）+ 85 例测试全过。
+
 ## [1.1.12] - 2026-09-18
 
 工程化修补：修复 `dsh-compat.mjs` 功能回测基线的两处真实缺陷，并把兼容矩阵从 20 个 dsh 版本扩展到 22 个（新增 `0.1.6-alpha.1` / `0.1.6-alpha.2`）。不涉及插件运行时行为。

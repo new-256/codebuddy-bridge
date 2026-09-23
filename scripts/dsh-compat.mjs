@@ -14,6 +14,10 @@
 //   C6 注册名校验         dsh-client-modules arrive() 的
 //                         `loaded without registering "<pkgName>"`（v1.1.8 事故的根因）
 //   C7 graph id 定位      client-modules host 侧 locatePkgJson（graph id = 包名的机制）
+//   C8 声明制 preset       dsh 是否带 agent-preset 声明机制（@deepseek-ai/dsh-agent-preset
+//                          声明行 + agentPresets 注册表）。≥0.1.7-alpha.1 出现，同时
+//                          目录式 preset（$DSH_HOME/.agent-presets/）停止被读取——
+//                          Form-A 交付形态的拆分点（v1.2.0 修复的根因）。
 //
 // 用法：
 //   node scripts/dsh-compat.mjs                # Phase 1 静态探测（全部 dsh 版本）
@@ -38,8 +42,9 @@ const MIRROR = 'https://registry.npmmirror.com'
 const DSH = '@deepseek-ai/dsh'
 const PERSONA = '@deepseek-ai/dsh-persona'
 const CLIENT_MODULES = '@deepseek-ai/dsh-client-modules'
+const AGENT_PRESET_REGISTRY = '@deepseek-ai/dsh-agent-preset-registry'
 const PROBE_PKG = 'codebuddy-first-bridge'
-const PROBE_VER = '1.1.11'
+const PROBE_VER = '1.2.0'
 
 // ── npm CLI 解析与传输（Windows .cmd shim 不可直接 spawn，见 audit 脚本） ──
 function resolveNpmCli() {
@@ -142,7 +147,7 @@ function readJsBlob(pkgRoot) {
 
 // ── Phase 1：静态契约探测 ─────────────────────────────────────────────────
 function staticProbe(v, manifest) {
-  const row = { version: v, published: null, bin: null, probes: {}, persona: {}, clientModules: {}, note: '' }
+  const row = { version: v, published: null, bin: null, probes: {}, persona: {}, clientModules: {}, agentPreset: {}, note: '' }
 
   const dshRoot = packExtractCached(`${DSH}@${v}`, manifest.dist && manifest.dist.shasum)
   const blob = readJsBlob(dshRoot)
@@ -154,7 +159,7 @@ function staticProbe(v, manifest) {
     bundlesList: blob.includes('profile.bundles'),
   }
 
-  // 锁步同名版本探测 dsh-persona / dsh-client-modules
+  // 锁步同名版本探测 dsh-persona / dsh-client-modules / dsh-agent-preset-registry
   try {
     const pb = readJsBlob(packExtractCached(`${PERSONA}@${v}`, null))
     row.persona.prefixSchema = pb.includes('prefix: z.string().required()')
@@ -169,7 +174,29 @@ function staticProbe(v, manifest) {
   } catch (e) {
     row.clientModules.error = e.message.slice(0, 120)
   }
+  // C8：声明制 preset 机制。锁步版本探测 agent-preset-registry；同时读 dsh blob
+  // 里的 agentPresets 痕迹（注册表由 dsh-web-app bundle 加载，dsh 根包 blob 可能
+  // 无引用，所以以 registry 包存在性为准）。
+  try {
+    const rb = readJsBlob(packExtractCached(`${AGENT_PRESET_REGISTRY}@${v}`, null))
+    row.agentPreset.registry = true
+    row.agentPreset.registerApi = rb.includes('async register(definition)') || rb.includes('register(definition)')
+    row.agentPreset.mountPreset = rb.includes('mountPreset')
+  } catch (e) {
+    row.agentPreset.registry = false
+    row.agentPreset.error = e.message.slice(0, 120)
+  }
+  row.agentPreset.declarationPlugin = !!packExtractCachedQuiet(`${AGENT_PRESET_REGISTRY.replace('-registry', '')}@${v}`)
   return row
+}
+
+/** 探测包是否存在（不抛错）；存在则返回解包目录，否则 null。 */
+function packExtractCachedQuiet(spec) {
+  try {
+    return packExtractCached(spec, null)
+  } catch {
+    return null
+  }
 }
 
 // ── Phase 2：沙箱功能回测（真实 `dsh plugin --profile web add`） ──────────
@@ -376,21 +403,24 @@ async function main() {
 
   // 矩阵输出
   console.log('\n## 兼容矩阵（静态探测' + (full ? ' + 沙箱安装回测' : '') + '）\n')
-  console.log('| dsh 版本 | 发布 | plugin CLI | pnpm 转发 | bundle.patch | bundles 对账 | persona prefix/suffix | 注册名校验 | graph id=包名 | 沙箱安装 ' + PROBE_VER + ' |')
-  console.log('| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |')
+  console.log('| dsh 版本 | 发布 | plugin CLI | pnpm 转发 | bundle.patch | bundles 对账 | persona prefix/suffix | 注册名校验 | graph id=包名 | 声明制 preset | 沙箱安装 ' + PROBE_VER + ' |')
+  console.log('| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |')
   for (const r of finalRows) {
     const p = r.probes
     const yn = (b) => (b === true ? '✓' : b === false ? '—' : '?')
     const personaCell = r.persona.error ? '✗' : (r.persona.prefixSchema ? '✓' : (r.persona.legacyText ? 'text:' : '?'))
     const cmCell = r.clientModules.error ? '✗' : yn(r.clientModules.regCheck)
     const gidCell = r.clientModules.error ? '✗' : yn(r.clientModules.locatePkgJson)
+    const apCell = (r.agentPreset && r.agentPreset.registry === true)
+      ? '✓' + (r.agentPreset.declarationPlugin ? '' : '(registry only)')
+      : '—'
     const fnCell = r.functional
       ? (r.functional.ok ? '✅ PASS'
         : r.functional.skipped
           ? (r.functional.transient ? '⏱ 瞬时失败，待重跑' : '⏭ 依赖树缺失，今日不可安装')
           : '❌ ' + String(r.functional.error).slice(0, 40))
       : (full ? '(未回测)' : '')
-    console.log(`| ${r.version} | ${r.published} | ${yn(p.pluginCmd)} | ${yn(p.pnpmFwd)} | ${yn(p.bundlePatchDecl)} | ${yn(p.bundlesList)} | ${personaCell} | ${cmCell} | ${gidCell} | ${fnCell} |`)
+    console.log(`| ${r.version} | ${r.published} | ${yn(p.pluginCmd)} | ${yn(p.pnpmFwd)} | ${yn(p.bundlePatchDecl)} | ${yn(p.bundlesList)} | ${personaCell} | ${cmCell} | ${gidCell} | ${apCell} | ${fnCell} |`)
   }
 
   const pass = finalRows.filter((r) => r.functional && r.functional.ok).length
