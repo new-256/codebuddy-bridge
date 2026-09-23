@@ -44,7 +44,7 @@ const PERSONA = '@deepseek-ai/dsh-persona'
 const CLIENT_MODULES = '@deepseek-ai/dsh-client-modules'
 const AGENT_PRESET_REGISTRY = '@deepseek-ai/dsh-agent-preset-registry'
 const PROBE_PKG = 'codebuddy-first-bridge'
-const PROBE_VER = '1.2.0'
+const PROBE_VER = '1.3.0'
 
 // ── npm CLI 解析与传输（Windows .cmd shim 不可直接 spawn，见 audit 脚本） ──
 function resolveNpmCli() {

@@ -27,10 +27,10 @@
 
 | 形态 | 位置 | 能力 | 是否随进程重启保留 | 状态灯 |
 | --- | --- | --- | --- | --- |
-| **持久 Agent Preset**（DSH 内推荐） | [`preset/codebuddy-first/`](preset/codebuddy-first/) | 工具 + 优先策略 + 回退弹窗 + `codebuddy_status` + 双后端（codebuddy/workbuddy） | ✅ 是（落盘为 preset） | ❌ 无（Host 面组合不含浏览器 UI） |
+| **持久 Agent Preset**（DSH 内推荐） | [`preset/codebuddy-first/`](preset/codebuddy-first/) | 工具 + 优先策略 + 回退弹窗 + `codebuddy_status` + 三后端（codebuddy/codebuddy-en/workbuddy）+ 设置面板（偏好 CLI/默认模型） | ✅ 是（落盘为 preset） | ❌ 无（Host 面组合不含浏览器 UI） |
 | **家级状态灯插件**（随软件启动） | [`home-plugin/codebuddy-indicator/`](home-plugin/codebuddy-indicator/) | 状态灯（所有会话自动显示，无需审批） | ✅ 是（cordis.patch.yml 注册） | ✅ 有 |
-| **动态 Cordis 插件**（当前会话） | [`dynamic/`](dynamic/) | 工具 + 优先策略 + 回退弹窗 + **状态灯** + `codebuddy_status` + 双后端 | ❌ 否（进程内临时） | ✅ 有（需一次性审批） |
-| **MCP 服务器**（任何 MCP 宿主） | [`mcp/`](mcp/) | `codebuddy_run` / `codebuddy_continue` / `codebuddy_status` 通过 `tools/list` 被 Claude Code、Codex、Cherry Studio 等**自动发现**，由宿主代理自主决定是否调用；支持双后端 | ✅ 是（注册进客户端配置） | ❌ 无 |
+| **动态 Cordis 插件**（当前会话） | [`dynamic/`](dynamic/) | 工具 + 优先策略 + 回退弹窗 + **状态灯** + `codebuddy_status` + 三后端 | ❌ 否（进程内临时） | ✅ 有（需一次性审批） |
+| **MCP 服务器**（任何 MCP 宿主） | [`mcp/`](mcp/) | `codebuddy_run` / `codebuddy_continue` / `codebuddy_status` 通过 `tools/list` 被 Claude Code、Codex、Cherry Studio 等**自动发现**，由宿主代理自主决定是否调用；支持三后端 | ✅ 是（注册进客户端配置） | ❌ 无 |
 
 > **状态灯为什么需要家级插件？** Agent Preset 是 **Host 面** 组合（`agent.cordis.yml` 挂载 Host 插件），其中的 `.mjs` 只在 Node 侧运行，天然不含浏览器 UI；而实时状态灯是 **Client 面**（浏览器 Slot）组件。**家级插件**（`cordis.patch.yml` 注册，如 `home-plugin/codebuddy-indicator/`）同时提供 Host 半（收集各会话推送的 codebuddy 状态 + HTTP 路由）与 Client 半（浏览器轮询渲染），随 DSH 启动自动加载、所有会话自动显示、无需审批。动态插件形态（首次运行需 GUI 一次性审批）与家级形态的灯可并存：两种形态都把快照汇入家级收集器（动态形态经 `codebuddyCollector.mergeSnapshot`，preset 形态经 `ctx.emit('codebuddy/status')` 事件）。
 >
@@ -130,15 +130,16 @@ Codex / 通用 JSON 配置、环境变量与自检见 [`mcp/README.md`](mcp/READ
 - **DeepSeek Harness (DSH)**，且会话已挂载所需 Host 服务：`tools`、`subprocess`、`systemPrompt`、`timer`（可选 `jobs`、`planMode`、`sandboxPolicy`、`userQuestions`）。
 - 本机已安装 **`codebuddy` CLI**（CodeBuddy Code，`npm i -g @tencent-ai/codebuddy-code`；开发时验证版本 v2.143.0）。**不要求在 PATH 里**：桥接会依次尝试 `subprocess.resolveExecutable('codebuddy')` → `node + CODEBUDDY_BIN` → `node + %APPDATA%\npm\node_modules\@tencent-ai\codebuddy-code\bin\codebuddy`，npm 全局安装即可被找到。
 - **可选**：腾讯 **WorkBuddy 桌面版**（办公任务 `backend="workbuddy"` 派发用；CLI 随桌面版安装于 `C:\Program Files\WorkBuddy\resources\app.asar.unpacked\cli\bin\codebuddy`，可用 `WORKBUDDY_BIN` 覆盖）。未安装时该后端返回带安装指引的错误，codebuddy 默认后端不受影响。
+- **可选**：国际版账号（`backend="codebuddy-en"` / WorkBuddy 国际面）。国际版没有独立 npm 包——`codebuddy-en` 复用上面同一个 npm CLI，桥接在每次调用时注入国际端点环境变量（`CODEBUDDY_BASE_URL=https://www.workbuddy.ai/v2` + `CODEBUDDY_INTERNET_ENVIROMENT=cloudhosted`，均为 CLI 官方契约）。要求在国际域（workbuddy.ai）登录过；默认模型清单与国内不同（见下）。
 - 状态灯还需 DSH 的 Web GUI（Client 面）。
 
 ## 工具用法
 
 `codebuddy_run(prompt, mode?, model?, effort?, maxTurns?, cwd?, addDirs?, timeoutSec?, background?, backend?)`
 
-- `backend`：**双后端选择**（v1.1.0）。`codebuddy`（默认，CodeBuddy Code，编码场景）或 `workbuddy`（腾讯 WorkBuddy——CodeBuddy 的同引擎孪生产品，主打办公场景：文档/幻灯/表格、知识库、图片视频生成、微信/企微回复）。两者各自维护独立会话存储；`codebuddy_continue` 续接时按 sessionId **自动路由回所属后端**，显式传 `backend` 最优先。
+- `backend`：**三后端选择**（v1.3.0）。`codebuddy`（默认，CodeBuddy Code 国内版 copilot.tencent.com，编码场景）、`codebuddy-en`（国际版 CodeBuddy——同一 npm CLI + 国际端点注入）、`workbuddy`（WorkBuddy 桌面版自带 CLI，国际产品面：文档/幻灯/表格、知识库、图片视频生成、微信/企微回复）。会话按后端归档（登录域互斥）；`codebuddy_continue` 续接时按 sessionId **自动路由回所属后端**，显式传 `backend` 最优先；无历史会话的新调用按**用户偏好默认后端**（设置面板）调度。
 - `mode`：`auto`（默认，跟随 DSH plan 状态自动选 `plan`/`accept-edits`）、`plan`、`accept-edits`。
-- `model`：可选，指定模型（如 `hy4-preview`（默认）、`hy3`、`glm-5.3`、`kimi-k3-1`、`deepseek-v4-pro` 等，完整清单见工具描述）；不传用 CLI 配置的默认模型。`effort`：`minimal / low / medium / high / xhigh / max`；`maxTurns`（1-500，默认不限）可选。
+- `model`：可选，指定模型；不传时用**用户偏好默认模型**（设置面板，若设置过），否则用 CLI 配置的默认。模型清单按产品面不同——国内（`codebuddy`）：`hy4-preview`（默认）、`hy3`、`glm-5.3`、`kimi-k3-1`、`deepseek-v4-pro` 等；国际（`codebuddy-en`/`workbuddy`）：`auto`、`glm-5.1`、`kimi-k2.5`、`glm-4.7` 等（完整清单见工具描述）。`effort`：`minimal / low / medium / high / xhigh / max`；`maxTurns`（1-500，默认不限）可选。
 - `background: true`：作为后台任务运行，立即返回 `jobId`，用 `job_output` 收结果；后台路径同样有 `timeoutSec+60s` 挂起守卫。
 - 返回：`{ ok, status, response, sessionId, durationSeconds, numTurns, totalTokens, exitCode, mode, backend, stderr }`；回退时为 `{ ok:false, fallback:true, status:'FALLBACK_TO_DSH', ... }`。
 
@@ -225,6 +226,7 @@ codebuddy-first-bridge/
 
 | 版本 | 适配 DSH | 内容 |
 | --- | --- | --- |
+| [v1.3.0](https://github.com/new-256/codebuddy-bridge/releases/tag/v1.3.0) | dsh 0.1.7-rc.1 真机实测 / 全版本（设置面兼容矩阵见 [COMPATIBILITY](docs/COMPATIBILITY.md)） | **CodeBuddy 国际版接入 + 插件设置**。① 三后端：新增 `codebuddy-en`（国际版 CodeBuddy）——国际版没有独立 npm 包（npm 全量扫描 + CLI dist 核实），就是同一个 `@tencent-ai/codebuddy-code` CLI + 端点切换：每次调用注入 CLI 官方契约变量 `CODEBUDDY_BASE_URL=https://www.workbuddy.ai/v2`（须带 `/v2`，`resolveModelBaseURL` 原样采用）与 `CODEBUDDY_INTERNET_ENVIROMENT=cloudhosted`（官方拼写），国内后端零注入；后端路由统一为 `resolveBackend()`（显式 > 会话归属 > 用户偏好 > 默认），三形态六处工具 schema 与策略提示同步扩列，模型清单按产品面分列（两列表来自两个已装 CLI `--help` 实测）。② 插件设置（设置面板）：桥接行导出 `Config` 鸭子 schema（preset 沙箱无法 import schemastery；`toJSON()` 产出官方 refs JSON 可被官方 `z()` 原样重建，SettingsForms 投影契约逐函数核实），三字段全 volatile 热编辑：偏好 CLI（三后端枚举）/ 默认模型（留空 = CLI 默认）/ 国际端点 URL；旧 DSH（≤0.1.6）`ctx.settings` provider 鸭子探测 + watch 热同步，服务缺失静默降级为行 config；MCP/动态形态共享 dsh-home 根 `codebuddy-bridge-settings.json`。测试 85→100 例 |
 | [v1.2.0](https://github.com/new-256/codebuddy-bridge/releases/tag/v1.2.0) | dsh 0.1.7-rc.1 真机实测 / 全版本（26 版本矩阵） | **Form-A 修复：新 DSH（≥ 0.1.7-alpha.1）preset 静默失效**——dsh 0.1.7-alpha.1 起 preset 从目录制（`.agent-presets/`）切为**声明制**（运行时向 `agentPresets` 注册表登记），旧目录不再被读取，方式 A 装上即失效且无报错。修复 = **indicator 自注册声明**：状态灯插件 `apply()` 里 `ctx.inject(['agentPresets'])` 等注册表出现后 `register(definition)`（官方 standard preset 全量移植 + 桥接行；旧 DSH 上注入器挂起零副作用，不新增任何 loader 行——旧 loader 对导入失败是致命的）。桥接行用裸说明符子路径 `codebuddy-first-bridge/preset-bridge`（注册表以自身 baseUrl 解析相对名，相对路径必然指错）。真机验证：本地 tarball 走真实 `dsh plugin add` 安装 + boot，roster 探针确认 `codebuddy-first` 与官方四个 preset 并列、无 broken。兼容矩阵 22 → 26 版本（新增 C8 声明制契约探针 + 0.1.5-rc.3 / 0.1.7-alpha.1/.2 / 0.1.7-rc.1） |
 | [v1.1.12](https://github.com/new-256/codebuddy-bridge/releases/tag/v1.1.12) | 见支持声明（22 版本回测） | **工程化修补：dsh 全版本回测基线修复 + 矩阵扩展至 22 版本**（不涉及插件运行时行为）——① 移除 `--legacy-peer-deps`（会跳过 dsh-app-boot 运行时必需的 peerDependencies，导致沙箱 dsh 环境缺 peer 无法 boot）；② 加 `--before=<发布时间>` 时间锚定（防内部组件 caret 范围把 0.1.6-alpha.x 拉进历史版本形成混合树）；③ `PROBE_VER` 对齐 1.1.11。`docs/COMPATIBILITY.md` 新增 0.1.6-alpha.1/.2 两行并重跑矩阵 |
 | [v1.1.11](https://github.com/new-256/codebuddy-bridge/releases/tag/v1.1.11) | 见支持声明（全版本回测） | **工程化修补：两个发布/回测工具的观测准确性**（不涉及插件运行时行为）——① `audit-npm-sync.mjs` 取版本列表加 `--prefer-online`：`npm view <pkg> versions` 会命中 npm 本地元数据缓存，导致刚 `npm publish` 完立刻审计仍只见旧版本列表（实测；CI 新 tag 刚推时同理）；② `dsh-compat.mjs` 汇总单列 **功能失败**：此前 `functional.ok === false` 的真实失败被算进 `untested`，与「根本没跑过」混为一谈（20 版本回测中 7 个「CLI 环境不兼容」行口径不准），现在 `untested = 总数 − pass − failed − skip − pending` 并与 COMPATIBILITY §3.1 分档对齐 |

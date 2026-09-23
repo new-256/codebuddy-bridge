@@ -12,6 +12,7 @@ export function createMockCtx(opts) {
   if (o.sandboxPolicy) services.sandboxPolicy = o.sandboxPolicy
   if (o.planMode) services.planMode = o.planMode
   if (o.collector) services.codebuddyCollector = o.collector
+  if (o.settings) services.settings = o.settings
   const registeredTools = []
   const sections = []
   const events = []

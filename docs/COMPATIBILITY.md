@@ -29,7 +29,18 @@
 | --- | --- | --- |
 | 0.3.14 | 0.1.2-alpha.5 | v1.1.2 实测机型 |
 | 0.3.36 | 0.1.5-rc.1 | v1.1.7 事故机型（桌面壳安全模式）；dsh 0.1.2-rc.1 环境实测触发 crash |
-| （当前） | 0.1.7-rc.1 | 2026-09-24 本机运行中；v1.2.0 在此环境完成真机验证（§6.3） |
+| （当前） | 0.1.7-rc.1 | 2026-09-24 本机运行中；v1.2.0/v1.3.0 在此环境完成真机验证（§6.3） |
+
+**v1.3.0 插件设置的版本面**（优先 CLI / 默认模型 / 国际端点三项偏好）：
+
+| dsh 世代 | 设置通道 | 说明 |
+| --- | --- | --- |
+| ≥ 0.1.7-alpha.1（新） | **设置面板**（dsh-settings SettingsForms 自动投影插件 Config） | 字段全部 volatile（热编辑免重载），改动落 profile 用户补丁 |
+| ≤ 0.1.6（旧） | `ctx.settings` provider/document（有服务时注册 `codebuddy-bridge` namespace + watch）或 profile patch 行 config 手改 | 服务缺失/未挂载 provider 时**静默降级**为行 config，功能零损失 |
+| 全版本 | MCP/动态形态：dsh-home 根 `codebuddy-bridge-settings.json` | 与面板/patch 写的偏好共享（DSH preset 面板改动落行 config；该文件供 MCP 独立读取） |
+
+`codebuddy-en` 后端本身与 dsh 版本无关（同一 CLI + 端点 env 注入，见 [CHANGELOG](CHANGELOG.md) §1.3.0）；
+仅要求本机已装 npm CLI（`@tencent-ai/codebuddy-code`）并在国际域（workbuddy.ai）登录。
 
 ## 2. 静态契约探测（26/26 全覆盖）
 

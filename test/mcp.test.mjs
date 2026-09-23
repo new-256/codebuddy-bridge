@@ -70,7 +70,7 @@ test('协议握手 + 工具列表', async () => {
   const { child, client, init } = await startServer({})
   try {
     assert.equal(init.result.serverInfo.name, 'codebuddy-mcp-server')
-    assert.equal(init.result.serverInfo.version, '1.2.0')
+    assert.equal(init.result.serverInfo.version, '1.3.0')
     const tools = await client.request('tools/list', {})
     assert.deepEqual(tools.result.tools.map((t) => t.name).sort(), ['codebuddy_continue', 'codebuddy_run', 'codebuddy_status'])
     const ping = await client.request('ping', {})
@@ -196,5 +196,39 @@ test('isLimited 收窄：stderr 干净但答复含网络词 → 不加限流注�
     assert.ok(!run.result.content[0].text.includes('rate-limit'))
   } finally {
     client.close()
+  }
+})
+
+// ── v1.3.0：codebuddy-en 后端 + 设置文件 ──────────────────────────────────────
+
+test('codebuddy-en：设置文件偏好 + 国际端点注入 + 用户偏好默认模型', async () => {
+  const os = await import('node:os')
+  const fsMod = await import('node:fs')
+  const pathMod = await import('node:path')
+  const tmpHome = fsMod.mkdtempSync(pathMod.join(os.tmpdir(), 'cb-mcp-settings-'))
+  fsMod.writeFileSync(pathMod.join(tmpHome, 'codebuddy-bridge-settings.json'), JSON.stringify({
+    preferredBackend: 'codebuddy-en',
+    defaultModel: 'glm-5.1',
+    codebuddyEnBaseUrl: 'https://www.workbuddy.ai/v2'
+  }), 'utf8')
+  try {
+    // CODEBUDDY_BIN 指伪夹具 → commandFor('codebuddy-en') 复用它（同 npm CLI）。
+    const { child, client } = await startServer({
+      CODEBUDDY_INDICATOR_DIR: tmpHome,
+      CODEBUDDY_BIN: FAKE_BIN,
+      CODEBUDDY_MCP_CWD: FIXTURES_DIR
+    })
+    try {
+      // 新会话（无显式 backend）→ preferredBackend=codebuddy-en
+      const run = await client.request('tools/call', { name: 'codebuddy_run', arguments: { prompt: 'hi', cwd: FIXTURES_DIR } })
+      const text = run.result.content[0].text
+      assert.ok(text.startsWith('codebuddy-en OK'), text.slice(0, 80))
+      // 用户偏好 defaultModel（无显式 model）→ --model glm-5.1 已注入（伪 bin 回报 model）
+      assert.ok(text.includes('model=glm-5.1'), '应注入偏好默认模型: ' + text.slice(0, 120))
+    } finally {
+      client.close()
+    }
+  } finally {
+    fsMod.rmSync(tmpHome, { recursive: true, force: true })
   }
 })

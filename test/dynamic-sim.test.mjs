@@ -230,3 +230,77 @@ test('后台派发：返回 jobId，任务在后台跑完并计入状态', async
   const snap = mockHarness.tools.find((t) => t.name === 'codebuddy_status').execute({ cwd: 'C:\\projBG' })
   assert.equal(snap.runs, 1)
 })
+
+// ── v1.3.0：codebuddy-en 后端 + 用户偏好设置 ────────────────────────────────────
+
+test('backend=codebuddy-en：同 npm CLI 路径 + 国际端点 env 注入', async () => {
+  const { sub, mergedCtx, mockHarness } = freshHarness(() => ({ stdout: successStream({ session_id: 'en-1' }), exitCode: 0 }))
+  mergedCtx.ctx.subprocess = sub.subprocess
+  const plugin = loadGeneratedPlugin()(mockHarness.harness)
+  plugin.apply(mergedCtx.ctx)
+  const run = mockHarness.tools.find((t) => t.name === 'codebuddy_run')
+  const res = await run.execute({ prompt: 'x', backend: 'codebuddy-en', cwd: 'C:\\projEN', model: 'auto' }, { agent: 'a1' })
+  assert.equal(res.ok, true)
+  assert.equal(res.backend, 'codebuddy-en')
+  // 同一 npm CLI 二进制（node + npm bin 回退路径），不是 WorkBuddy 桌面 CLI。
+  const bin = sub.spawns[0].argv[1]
+  assert.ok(bin.includes('@tencent-ai\\codebuddy-code') || bin.includes('codebuddy-code'), 'codebuddy-en 应复用 npm CLI: ' + bin)
+  // 国际端点 env 注入（spawn spec.env）
+  const env = sub.spawns[0].env || {}
+  assert.equal(env.CODEBUDDY_INTERNET_ENVIROMENT, 'cloudhosted')
+  assert.equal(env.CODEBUDDY_BASE_URL, 'https://www.workbuddy.ai/v2')
+  // 国内后端不带任何 env 注入
+  await run.execute({ prompt: 'y', cwd: 'C:\\projEN', model: 'hy4-preview' }, { agent: 'a1' })
+  assert.equal(sub.spawns[1].env, undefined)
+})
+
+test('用户偏好默认 backend：无显式 backend 的新会话调度到偏好后端 + 默认模型注入', async () => {
+  const projA = 'C:\\projPref'
+  let nth = 0
+  const { sub, mergedCtx, mockHarness } = freshHarness(() => {
+    nth += 1
+    return { stdout: successStream({ session_id: 'pref-' + nth }), exitCode: 0 }
+  })
+  mergedCtx.ctx.subprocess = sub.subprocess
+  const plugin = loadGeneratedPlugin()(mockHarness.harness)
+  plugin.apply(mergedCtx.ctx)
+  const run = mockHarness.tools.find((t) => t.name === 'codebuddy_run')
+  // 第一跑走默认 codebuddy（sanity：不是 WorkBuddy 桌面 CLI 路径）
+  await run.execute({ prompt: 'one', cwd: projA }, { agent: 'a1' })
+  assert.notEqual(sub.spawns[0].argv[1], 'C:\\Program Files\\WorkBuddy\\resources\\app.asar.unpacked\\cli\\bin\\codebuddy')
+  // 显式 backend=codebuddy-en 的调用走国际面（env 注入），不受历史会话影响
+  await run.execute({ prompt: 'two', cwd: projA, backend: 'codebuddy-en' }, { agent: 'a1' })
+  assert.equal(sub.spawns[1].env.CODEBUDDY_INTERNET_ENVIROMENT, 'cloudhosted')
+  // 真实偏好来源是设置文件/Config；动态形态经 DSH_HOME 读设置文件（下一个测试覆盖），
+  // 会话归属路由已由「workbuddy 会话自动路由」用例覆盖，此处不再重复。
+})
+
+test('用户偏好 defaultModel：调用未指定 model 时注入 --model', async () => {
+  // 直接注入设置文件（动态形态读 DSH_HOME）
+  const os = await import('node:os')
+  const fsMod = await import('node:fs')
+  const pathMod = await import('node:path')
+  const tmpHome = fsMod.mkdtempSync(pathMod.join(os.tmpdir(), 'cb-settings-'))
+  fsMod.writeFileSync(pathMod.join(tmpHome, 'codebuddy-bridge-settings.json'), JSON.stringify({ preferredBackend: 'codebuddy', defaultModel: 'glm-5.2' }), 'utf8')
+  const realEnv = process.env.DSH_HOME
+  process.env.DSH_HOME = tmpHome
+  try {
+    const { sub, mergedCtx, mockHarness } = freshHarness(() => ({ stdout: successStream({ session_id: 'dm-1' }), exitCode: 0 }))
+    mergedCtx.ctx.subprocess = sub.subprocess
+    const plugin = loadGeneratedPlugin()(mockHarness.harness)
+    plugin.apply(mergedCtx.ctx)
+    const run = mockHarness.tools.find((t) => t.name === 'codebuddy_run')
+    const res = await run.execute({ prompt: 'x', cwd: 'C:\\projDM' }, { agent: 'a1' })
+    assert.equal(res.ok, true)
+    const argv = sub.spawns[0].argv
+    assert.ok(argv.includes('--model') && argv.includes('glm-5.2'), '应注入用户偏好默认模型: ' + argv.join(' '))
+    // 显式 model 优先于偏好
+    await run.execute({ prompt: 'y', cwd: 'C:\\projDM', model: 'hy3' }, { agent: 'a1' })
+    const argv2 = sub.spawns[1].argv
+    assert.ok(argv2.includes('hy3') && !argv2.includes('glm-5.2'))
+  } finally {
+    if (realEnv === undefined) delete process.env.DSH_HOME
+    else process.env.DSH_HOME = realEnv
+    fsMod.rmSync(tmpHome, { recursive: true, force: true })
+  }
+})

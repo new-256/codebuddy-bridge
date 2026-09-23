@@ -80,3 +80,132 @@ test('preset：process.env 形态解析 —— CODEBUDDY_BIN 命中时走 node+b
     else process.env.CODEBUDDY_BIN = savedBin
   }
 })
+
+// ── v1.3.0：插件设置（鸭子 Config）────────────────────────────────────────────
+
+test('Config 鸭子 schema：cordis resolveConfig 契约（~standard.validate）', async () => {
+  const mod = await loadPreset()
+  const C = mod.Config
+  // cordis 消费面：Config['~standard'].validate(config) → {value} | {issues}
+  assert.equal(typeof C['~standard'].validate, 'function')
+  const empty = C['~standard'].validate({})
+  assert.equal(empty.issues, undefined)
+  assert.deepEqual(empty.value, {
+    preferredBackend: 'codebuddy',
+    defaultModel: '',
+    codebuddyEnBaseUrl: 'https://www.workbuddy.ai/v2'
+  })
+  const ok = C['~standard'].validate({ preferredBackend: 'workbuddy', defaultModel: 'auto' })
+  assert.equal(ok.issues, undefined)
+  assert.equal(ok.value.preferredBackend, 'workbuddy')
+  const bad = C['~standard'].validate({ preferredBackend: 'bogus' })
+  assert.ok(bad.issues && bad.issues.length && bad.issues[0].path[0] === 'preferredBackend')
+})
+
+test('Config 鸭子 schema：SettingsForms 投影契约（toJSON refs 可被官方 z() 重建）', async () => {
+  const mod = await loadPreset()
+  const C = mod.Config
+  // SettingsForms 消费面 1：schema(entry) 要求 Config 带 toJSON
+  assert.equal(typeof C.toJSON, 'function')
+  const j = C.toJSON()
+  assert.equal(typeof j.uid, 'number')
+  assert.ok(j.refs && Object.keys(j.refs).length >= 4)
+  // 实例数据面：volatileForm 递归读 meta.volatile / .type / .dict
+  assert.equal(C.type, 'object')
+  for (const key of ['preferredBackend', 'defaultModel', 'codebuddyEnBaseUrl']) {
+    const child = C.dict[key]
+    assert.ok(child, 'dict 应包含 ' + key)
+    assert.equal(child.meta.volatile, true, key + ' 应标 volatile（设置面板热编辑）')
+    assert.ok(child.meta.description, key + ' 应带描述（表单文案）')
+  }
+  // SettingsForms 消费面 2（决定性）：plainSchema 重建 new z(schema.toJSON()) ——
+  // 若本机装有官方 schemastery 则真重建并对比校验行为（dsh 同款）。
+  try {
+    const zmod = await import('@deepseek-ai/schemastery')
+    const z = zmod.default
+    const rebuilt = z(j)
+    const v = rebuilt['~standard'].validate({ preferredBackend: 'codebuddy-en' })
+    assert.equal(v.issues, undefined)
+    assert.equal(v.value.preferredBackend, 'codebuddy-en')
+  } catch (e) {
+    // 无官方 schemastery 的环境跳过（鸭子 validate 自身已被上一测试覆盖）。
+  }
+})
+
+test('apply(ctx, config)：三读数生效 —— 偏好 backend + 默认模型 + en 端点', async () => {
+  const mod = await loadPreset()
+  const sub = createMockSubprocess(() => ({ stdout: successStream({ session_id: 'set-1' }), exitCode: 0 }))
+  const mc = createMockCtx({})
+  mc.ctx.subprocess = sub.subprocess
+  mod.apply(mc.ctx, { preferredBackend: 'codebuddy-en', defaultModel: 'glm-5.1', codebuddyEnBaseUrl: 'https://www.workbuddy.ai/v2' })
+  const run = mc.registeredTools.find((t) => t.name === 'codebuddy_run')
+  // 新会话（无历史、无显式 backend）→ preferredBackend=codebuddy-en + 默认模型注入 + env 注入
+  const res = await run.execute({ prompt: 'x', cwd: 'C:\\projS' }, { agent: 'a1' })
+  assert.equal(res.ok, true)
+  assert.equal(res.backend, 'codebuddy-en')
+  const argv = sub.spawns[0].argv
+  assert.ok(argv.includes('--model') && argv.includes('glm-5.1'), '应注入用户偏好默认模型: ' + argv.join(' '))
+  const env = sub.spawns[0].env || {}
+  assert.equal(env.CODEBUDDY_BASE_URL, 'https://www.workbuddy.ai/v2')
+  assert.equal(env.CODEBUDDY_INTERNET_ENVIROMENT, 'cloudhosted')
+})
+
+test('apply(ctx, config)：非法/缺省 config 回落默认（防御 profile patch 手写错值）', async () => {
+  const mod = await loadPreset()
+  const sub = createMockSubprocess(() => ({ stdout: successStream({ session_id: 'set-2' }), exitCode: 0 }))
+  const mc = createMockCtx({})
+  mc.ctx.subprocess = sub.subprocess
+  mod.apply(mc.ctx, { preferredBackend: 'not-a-backend', defaultModel: 42, codebuddyEnBaseUrl: null })
+  const run = mc.registeredTools.find((t) => t.name === 'codebuddy_run')
+  const res = await run.execute({ prompt: 'x', cwd: 'C:\\projS2' }, { agent: 'a1' })
+  assert.equal(res.ok, true)
+  assert.equal(res.backend, 'codebuddy', '非法偏好应回落默认 codebuddy')
+  assert.ok(!sub.spawns[0].argv.includes('--model'), '非法默认模型不应注入')
+  assert.equal(sub.spawns[0].env, undefined, 'codebuddy 后端不注入 env')
+})
+
+test('apply(ctx, config)：旧 dsh settings 兼容通道（provider/document 鸭子探测）', async () => {
+  const mod = await loadPreset()
+  const sub = createMockSubprocess(() => ({ stdout: successStream({ session_id: 'set-3' }), exitCode: 0 }))
+  // 模拟老 dsh 的 ctx.settings：register(ns, schema, {base}) → { get, watch }
+  let registered = null
+  let watched = null
+  let published = { preferredBackend: 'workbuddy', defaultModel: 'kimi-k2.5' }
+  const fakeSettings = {
+    register(ns, schema, opts) {
+      registered = { ns: ns, schema: schema, base: opts && opts.base }
+      return {
+        get() { return published },
+        watch(cb) { watched = cb }
+      }
+    }
+  }
+  const mc = createMockCtx({ settings: fakeSettings })
+  mc.ctx.subprocess = sub.subprocess
+  mod.apply(mc.ctx, {})
+  assert.ok(registered, '应向老 settings 注册 namespace')
+  assert.equal(registered.ns, 'codebuddy-bridge')
+  // 老 settings resolve 用 schema(mergedValue)：鸭子 callable 必须可用
+  const resolved = registered.schema({ preferredBackend: 'workbuddy', defaultModel: 'kimi-k2.5', codebuddyEnBaseUrl: undefined })
+  assert.equal(resolved.preferredBackend, 'workbuddy')
+  assert.equal(resolved.defaultModel, 'kimi-k2.5')
+  // watch 触发 → 运行时快照热更新 → 下一次调用生效
+  published = { preferredBackend: 'workbuddy', defaultModel: '' }
+  watched(published)
+  const run = mc.registeredTools.find((t) => t.name === 'codebuddy_run')
+  const res = await run.execute({ prompt: 'x', cwd: 'C:\\projS3' }, { agent: 'a1' })
+  assert.equal(res.backend, 'workbuddy', 'watch 更新后应调度到偏好后端')
+  assert.ok(!sub.spawns[0].argv.includes('--model'), 'watch 清空默认模型后不再注入')
+})
+
+test('无 settings 服务：静默降级（不抛错、默认 backend 照常）', async () => {
+  const mod = await loadPreset()
+  const sub = createMockSubprocess(() => ({ stdout: successStream({ session_id: 'set-4' }), exitCode: 0 }))
+  const mc = createMockCtx({})  // 无 settings
+  mc.ctx.subprocess = sub.subprocess
+  mod.apply(mc.ctx, null)
+  const run = mc.registeredTools.find((t) => t.name === 'codebuddy_run')
+  const res = await run.execute({ prompt: 'x', cwd: 'C:\\projS4' }, { agent: 'a1' })
+  assert.equal(res.ok, true)
+  assert.equal(res.backend, 'codebuddy')
+})

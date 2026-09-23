@@ -2,6 +2,28 @@
 
 本项目遵循 [语义化版本](https://semver.org/)；版本号同步 `package.json`、Git tag 与 GitHub Release（`npm run check` 中的 `scripts/verify.mjs` 在 CI 里锁三处一致）。
 
+## [1.3.0] - 2026-09-24
+
+**CodeBuddy 国际版接入 + 插件设置**：后端列表新增第三个条目 `codebuddy-en`（国际版 CodeBuddy / WorkBuddy 国际面），并在 DSH 设置面板提供「优先 CLI + 默认模型」两项用户偏好。
+
+### 国际版后端（codebuddy-en）
+
+- 新增 `codebuddy-en` 后端：国际版 CodeBuddy（`workbuddy.ai` 端点）。国际版**没有独立 npm 包**（已核实 npm 全量扫描与 CLI dist 内部常量）——它就是同一个 `@tencent-ai/codebuddy-code` CLI + 端点切换：CLI 官方支持 `CODEBUDDY_BASE_URL` 覆盖端点（`resolveModelBaseURL` 直接采用该值；CLI 自带 401 故障指引原文引用该变量），`CODEBUDDY_INTERNET_ENVIROMENT=cloudhosted`（官方拼写）声明云端企业环境。桥接在每次 `codebuddy-en` 调用的 spawn 上注入这两个变量（DSH subprocess 的 `spec.env` / MCP 的 spawn env），国内后端零注入。
+- 端点机制核实（CLI dist 反编译）：`isInternationalEndpoint` 按 hostname 判定国际端点（`codebuddy.ai` / `workbuddy.ai` / `staging-codebuddy.tencent.com`）；`CODEBUDDY_BASE_URL` 需带 `/v2`（env 值按原样使用，只有 product 端点才会补 `/v2`）——默认值 `https://www.workbuddy.ai/v2` 与本机 profile patch 里 WorkBuddy 供应商行一致（已在用）。
+- `coreExecute`/MCP 的后端路由重写为统一 `resolveBackend()`：显式 `backend` > 会话归属（登录域互斥）> 用户偏好 > 默认 `codebuddy`；白名单从硬编码双值改为 `BACKENDS` 注册表。工具 schema（preset/dynamic/MCP 三形态六处）与策略提示（POLICY_TEXT）同步扩为三后端，模型清单按产品面分列（国内 `hy4-preview`/`hy3`/`glm-5.3`…；国际 `auto`/`glm-5.1`/`kimi-k2.5`…——两列表来自两个已装 CLI 的 `--help` 实测）。
+
+### 插件设置（优先 CLI + 默认模型）
+
+- **新 DSH（≥0.1.7-alpha.1）设置面板**：preset 桥接行导出 `Config`（schemastery 同构鸭子 schema——preset 沙箱无法 import schemastery，鸭子形态是零依赖唯一路径；`toJSON()` 产出官方 refs JSON，可被官方 `z()` 原样重建，SettingsForms 投影契约逐函数核实）。三个字段全部标 `volatile`（热编辑无需重载）：`preferredBackend`（枚举三后端）、`defaultModel`（留空 = CLI 默认）、`codebuddyEnBaseUrl`（默认 `https://www.workbuddy.ai/v2`）。
+- **旧 DSH（≤0.1.6，provider/document settings）兼容**：`apply()` 里对 `ctx.settings` 鸭子探测（有 `register()` 才注册 `codebuddy-bridge` namespace + `watch` 热同步）；服务缺失时静默降级为「profile patch 行 config 手改」。
+- **MCP/动态形态**：共享同一份 dsh-home 根的 `codebuddy-bridge-settings.json`（MCP 5s 缓存重读；动态形态经 `DSH_HOME` 定位 apply 时读一次），三种形态的用户偏好一致生效。
+
+### 测试与文档
+
+- 新增 15 例（含真机 401 归类回归 1 例）：core（BACKENDS/resolveBackend/intlEndpointEnv/buildArgv defaultModel+env/isLimited 401 收窄）×5、preset（鸭子 Config cordis 契约/SettingsForms 投影契约含官方 z() 重建对拍/三读数生效/非法回落/旧 settings 通道/静默降级）×6、dynamic-sim（codebuddy-en env 注入/偏好 defaultModel 注入与显式覆盖）×2（+2 改造）、mcp e2e（设置文件偏好 + en 路由 + 偏好模型端到端）×1；`fake-codebuddy.mjs` 夹具回报 `--model`（modelUsage 通道）。
+- **真机验证**：`codebuddy-en` 实调（真实 CLI + env 注入）——CLI 错误原文确认请求确实被路由到 `https://www.workbuddy.ai`（env 注入链路生效），401 为国际域未登录（国际/国内登录互斥，属预期行为而非缺陷）；据此把 401 认证失败从 `isLimited` 限流类中**收窄排除**（否则会误弹「回退/重试」三选一，而这两者对认证失败都无效），`failureHint` 新增认证类可行动指引（换登录域）。
+- `npm run check` 全绿：verify 闸门 + **100** 例测试全过；版本五处同步 1.3.0。
+
 ## [1.2.0] - 2026-09-19
 
 **Form-A 修复**：新 DSH（`@deepseek-ai/dsh` ≥ 0.1.7-alpha.1）上 preset 交付形态（A 形态）静默失效——本版恢复全版本可用，交付形态不变（安装方式/命令零改动）。

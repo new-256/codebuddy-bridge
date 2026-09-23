@@ -8,7 +8,8 @@ import assert from 'node:assert/strict'
 import {
   isLimited, clampInt, shortLabel, summarizeArgs, parseCodebuddyJson, buildResult,
   buildArgv, fallbackResult, createLineStream, createStatusEngine, renderResult, renderStatus,
-  isTransientCliError, failureHint, buildMcpBridgePayload, normalizeMcpBridge, MCP_BRIDGE_FILE
+  isTransientCliError, failureHint, buildMcpBridgePayload, normalizeMcpBridge, MCP_BRIDGE_FILE,
+  BACKENDS, DEFAULT_BACKEND, isBackend, resolveBackend, intlEndpointEnv
 } from '../core/codebuddy-core.mjs'
 
 // ── clampInt / shortLabel / summarizeArgs ────────────────────────────────────
@@ -464,4 +465,72 @@ test('MCP 源码契约：child.stdout 必须声明 utf8 编码', async () => {
   const { readFileSync } = await import('node:fs')
   const src = readFileSync(new URL('../mcp/codebuddy-mcp-server.mjs', import.meta.url), 'utf8')
   assert.match(src, /child\.stdout\.setEncoding\('utf8'\)/, 'MCP 必须给 child.stdout 设 utf8 编码')
+})
+
+// ── v1.3.0：三后端注册表 + 用户偏好路由 + 国际端点 env ─────────────────────────
+
+test('BACKENDS 注册表：三后端 + isBackend 白名单', () => {
+  assert.deepEqual([...BACKENDS], ['codebuddy', 'codebuddy-en', 'workbuddy'])
+  assert.equal(DEFAULT_BACKEND, 'codebuddy')
+  for (const b of BACKENDS) assert.equal(isBackend(b), true)
+  assert.equal(isBackend('codebuddy-en'), true)
+  assert.equal(isBackend('bogus'), false)
+  assert.equal(isBackend(undefined), false)
+})
+
+test('resolveBackend：显式 > 会话归属 > 用户偏好 > 默认', () => {
+  // 显式 args.backend 最优先（合法值）
+  assert.equal(resolveBackend({ backend: 'workbuddy' }, { backend: 'codebuddy' }, 'codebuddy-en'), 'workbuddy')
+  // 非法显式值被忽略（而不是原样透传给 CLI）
+  assert.equal(resolveBackend({ backend: 'bogus' }, { backend: 'workbuddy' }, null), 'workbuddy')
+  // 会话归属次之
+  assert.equal(resolveBackend({}, { backend: 'codebuddy-en' }, 'workbuddy'), 'codebuddy-en')
+  assert.equal(resolveBackend({}, { backend: null }, 'workbuddy'), 'workbuddy')
+  // 用户偏好再次之；全空 → 默认
+  assert.equal(resolveBackend({}, { backend: null }, 'codebuddy-en'), 'codebuddy-en')
+  assert.equal(resolveBackend({}, { backend: null }, 'bogus'), 'codebuddy')
+  assert.equal(resolveBackend({}, {}, null), 'codebuddy')
+})
+
+test('intlEndpointEnv：仅 codebuddy-en 注入；BASE_URL 可配置；其余后端 null', () => {
+  const env = intlEndpointEnv('codebuddy-en', 'https://www.workbuddy.ai/v2')
+  assert.equal(env.CODEBUDDY_BASE_URL, 'https://www.workbuddy.ai/v2')
+  assert.equal(env.CODEBUDDY_INTERNET_ENVIROMENT, 'cloudhosted')
+  // 空配置：只带 INTERNET_ENVIROMENT，不带空 BASE_URL
+  const env2 = intlEndpointEnv('codebuddy-en', '')
+  assert.equal(env2.CODEBUDDY_BASE_URL, undefined)
+  assert.equal(env2.CODEBUDDY_INTERNET_ENVIROMENT, 'cloudhosted')
+  assert.equal(intlEndpointEnv('codebuddy', 'https://x'), null)
+  assert.equal(intlEndpointEnv('workbuddy', 'https://x'), null)
+  assert.equal(intlEndpointEnv(undefined, null), null)
+})
+
+test('buildArgv：defaultModel 只在未显式指定 model 时注入 + env 透传', () => {
+  const built = buildArgv(['node', 'cb'], { prompt: 'x' }, { defaultModel: 'glm-5.2', env: { A: '1' } })
+  assert.ok(built.argv.includes('--model') && built.argv.includes('glm-5.2'))
+  assert.deepEqual(built.env, { A: '1' })
+  const built2 = buildArgv(['node', 'cb'], { prompt: 'x', model: 'hy3' }, { defaultModel: 'glm-5.2', env: { A: '1' } })
+  assert.ok(built2.argv.includes('hy3') && !built2.argv.includes('glm-5.2'))
+  // 无 defaultModel / 无 env：不注入、env=null
+  const built3 = buildArgv(['node', 'cb'], { prompt: 'x' }, {})
+  assert.ok(!built3.argv.includes('--model'))
+  assert.equal(built3.env, null)
+})
+
+test('isLimited：401 认证失败/端点域不匹配不算限流（v1.3.0 真机实测）', () => {
+  // 真机 401 文案（codebuddy-en + 国内 token）：含 401/认证/端点字样，
+  // 若归入限流会误弹「回退/重试」三选一 —— 但重试与回退都无效。
+  const en401 = {
+    ok: false, status: 'FAILED',
+    stderr: '401 Authentication failed (401) for model "auto". The request was sent to https://www.workbuddy.ai, which differs from the current product endpoint https://www.codebuddy.ai. (token-length:1322)'
+  }
+  assert.equal(isLimited(en401), false, '401 认证失败不得判为限流')
+  // failureHint 给出可行动指引
+  const hint = failureHint(en401)
+  assert.ok(hint.includes('401') && hint.includes('登录'), '应提示重新登录: ' + hint)
+  // 回归：真限流/网络类仍判限流
+  assert.equal(isLimited({ ok: false, status: 'FAILED', stderr: 'rate limit exceeded' }), true)
+  assert.equal(isLimited({ ok: false, status: 'FAILED', stderr: 'connect ECONNREFUSED x:443' }), true)
+  // 瞬时 CLI 错误路径不受影响（401 不是 error_during_execution，也不该被重试）
+  assert.equal(isTransientCliError(en401), false)
 })
