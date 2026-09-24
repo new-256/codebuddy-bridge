@@ -39,8 +39,18 @@
 | ≤ 0.1.6（旧） | `ctx.settings` provider/document（有服务时注册 `codebuddy-bridge` namespace + watch）或 profile patch 行 config 手改 | 服务缺失/未挂载 provider 时**静默降级**为行 config，功能零损失 |
 | 全版本 | MCP/动态形态：dsh-home 根 `codebuddy-bridge-settings.json` | 与面板/patch 写的偏好共享（DSH preset 面板改动落行 config；该文件供 MCP 独立读取） |
 
-`codebuddy-en` 后端本身与 dsh 版本无关（同一 CLI + 端点 env 注入，见 [CHANGELOG](CHANGELOG.md) §1.3.0）；
-仅要求本机已装 npm CLI（`@tencent-ai/codebuddy-code`）并在国际域（workbuddy.ai）登录。
+三个后端与 dsh 版本无关，但**各有独立安装包**（v1.3.1 由真机 `product.json` 核实，
+推翻 v1.3.0 的「同一 npm CLI」结论；见 [CHANGELOG](CHANGELOG.md) §1.3.1 与
+[ROOT-CAUSE-codebuddy-en.md](ROOT-CAUSE-codebuddy-en.md)）：
+
+| 后端 | 安装包 | product 端点 | 登录要求 |
+|---|---|---|---|
+| `codebuddy`（默认） | npm `@tencent-ai/codebuddy-code` | `www.codebuddy.ai` | 已登录即用（端点按登录域自动对齐） |
+| `codebuddy-en` | WorkBuddy AI 桌面版（`C:\Program Files\WorkBuddyAI`） | `www.workbuddy.ai` | **需填 `codebuddyEnToken`**：国际版 token 被 protector key 加密，密钥不落盘、headless CLI 读不到 |
+| `workbuddy` | WorkBuddy 桌面版（`C:\Program Files\WorkBuddy`） | `copilot.tencent.com` | 已登录即用（端点按登录域自动对齐） |
+
+设置键（v1.3.1）：`preferredBackend` / `defaultModel` / `codebuddyEnToken` / `endpointOverride`
+（`codebuddyEnBaseUrl` 已移除——其默认值 `https://www.workbuddy.ai/v2` 对默认后端是错的）。
 
 ## 2. 静态契约探测（26/26 全覆盖）
 

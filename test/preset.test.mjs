@@ -5,7 +5,13 @@
 
 import test from 'node:test'
 import assert from 'node:assert/strict'
+import { fileURLToPath } from 'node:url'
 import { createMockCtx, createMockSubprocess, createUserQuestions, driveTicks, successStream } from './helpers/mockdsh.mjs'
+
+// 登录域夹具：把 CODEBUDDY_AUTH_DIR 指向 test/fixtures/auth（与真机 auth 库同结构、
+// 同 auth.domain 取值），使用例与「本机是否已登录」彻底解耦 —— 否则端点推导会随
+// 真机登录状态变化，测试结果不可复现。
+process.env.CODEBUDDY_AUTH_DIR = fileURLToPath(new URL('./fixtures/auth', import.meta.url))
 
 async function loadPreset() {
   // import() 直接接受 file:// URL（Windows 下 pathname 拼接会产生双盘符）
@@ -93,7 +99,8 @@ test('Config 鸭子 schema：cordis resolveConfig 契约（~standard.validate）
   assert.deepEqual(empty.value, {
     preferredBackend: 'codebuddy',
     defaultModel: '',
-    codebuddyEnBaseUrl: 'https://www.workbuddy.ai/v2'
+    codebuddyEnToken: '',
+    endpointOverride: ''
   })
   const ok = C['~standard'].validate({ preferredBackend: 'workbuddy', defaultModel: 'auto' })
   assert.equal(ok.issues, undefined)
@@ -112,7 +119,7 @@ test('Config 鸭子 schema：SettingsForms 投影契约（toJSON refs 可被官�
   assert.ok(j.refs && Object.keys(j.refs).length >= 4)
   // 实例数据面：volatileForm 递归读 meta.volatile / .type / .dict
   assert.equal(C.type, 'object')
-  for (const key of ['preferredBackend', 'defaultModel', 'codebuddyEnBaseUrl']) {
+  for (const key of ['preferredBackend', 'defaultModel', 'codebuddyEnToken', 'endpointOverride']) {
     const child = C.dict[key]
     assert.ok(child, 'dict 应包含 ' + key)
     assert.equal(child.meta.volatile, true, key + ' 应标 volatile（设置面板热编辑）')
@@ -132,22 +139,40 @@ test('Config 鸭子 schema：SettingsForms 投影契约（toJSON refs 可被官�
   }
 })
 
-test('apply(ctx, config)：三读数生效 —— 偏好 backend + 默认模型 + en 端点', async () => {
+test('apply(ctx, config)：三读数生效 —— 偏好 backend + 默认模型 + en 凭据', async () => {
   const mod = await loadPreset()
   const sub = createMockSubprocess(() => ({ stdout: successStream({ session_id: 'set-1' }), exitCode: 0 }))
   const mc = createMockCtx({})
   mc.ctx.subprocess = sub.subprocess
-  mod.apply(mc.ctx, { preferredBackend: 'codebuddy-en', defaultModel: 'glm-5.1', codebuddyEnBaseUrl: 'https://www.workbuddy.ai/v2' })
+  mod.apply(mc.ctx, { preferredBackend: 'codebuddy-en', defaultModel: 'glm-5.1', codebuddyEnToken: 'tok-en-1' })
   const run = mc.registeredTools.find((t) => t.name === 'codebuddy_run')
-  // 新会话（无历史、无显式 backend）→ preferredBackend=codebuddy-en + 默认模型注入 + env 注入
+  // 新会话（无历史、无显式 backend）→ preferredBackend=codebuddy-en + 默认模型注入 + 凭据注入
   const res = await run.execute({ prompt: 'x', cwd: 'C:\\projS' }, { agent: 'a1' })
   assert.equal(res.ok, true)
   assert.equal(res.backend, 'codebuddy-en')
   const argv = sub.spawns[0].argv
   assert.ok(argv.includes('--model') && argv.includes('glm-5.1'), '应注入用户偏好默认模型: ' + argv.join(' '))
+  // codebuddy-en 走 WorkBuddyAI 自带 CLI（不再是 npm CLI）
+  assert.match(argv[1], /WorkBuddyAI/, 'codebuddy-en 应解析到 WorkBuddyAI 自带 CLI: ' + argv[1])
   const env = sub.spawns[0].env || {}
-  assert.equal(env.CODEBUDDY_BASE_URL, 'https://www.workbuddy.ai/v2')
-  assert.equal(env.CODEBUDDY_INTERNET_ENVIROMENT, 'cloudhosted')
+  assert.equal(env.CODEBUDDY_AUTH_TOKEN, 'tok-en-1')
+  // 夹具登录域 = product 端点 → 无需注入 BASE_URL；且不再有 INTERNET_ENVIROMENT
+  assert.equal(env.CODEBUDDY_BASE_URL, undefined)
+  assert.equal(env.CODEBUDDY_INTERNET_ENVIROMENT, undefined)
+})
+
+test('apply(ctx, config)：codebuddy-en 缺凭据 → 前置 AUTH_REQUIRED（附可操作指引，不空跑 CLI）', async () => {
+  const mod = await loadPreset()
+  const sub = createMockSubprocess(() => ({ stdout: successStream({ session_id: 'set-1b' }), exitCode: 0 }))
+  const mc = createMockCtx({})
+  mc.ctx.subprocess = sub.subprocess
+  mod.apply(mc.ctx, { preferredBackend: 'codebuddy-en' })
+  const run = mc.registeredTools.find((t) => t.name === 'codebuddy_run')
+  const res = await run.execute({ prompt: 'x', cwd: 'C:\\projS1b' }, { agent: 'a1' })
+  assert.equal(res.ok, false)
+  assert.equal(res.status, 'AUTH_REQUIRED')
+  assert.match(res.stderr, /codebuddyEnToken/)
+  assert.equal(sub.spawns.length, 0, '缺凭据时不应真的 spawn CLI')
 })
 
 test('apply(ctx, config)：非法/缺省 config 回落默认（防御 profile patch 手写错值）', async () => {
@@ -155,13 +180,15 @@ test('apply(ctx, config)：非法/缺省 config 回落默认（防御 profile pa
   const sub = createMockSubprocess(() => ({ stdout: successStream({ session_id: 'set-2' }), exitCode: 0 }))
   const mc = createMockCtx({})
   mc.ctx.subprocess = sub.subprocess
-  mod.apply(mc.ctx, { preferredBackend: 'not-a-backend', defaultModel: 42, codebuddyEnBaseUrl: null })
+  mod.apply(mc.ctx, { preferredBackend: 'not-a-backend', defaultModel: 42, codebuddyEnToken: null, endpointOverride: null })
   const run = mc.registeredTools.find((t) => t.name === 'codebuddy_run')
   const res = await run.execute({ prompt: 'x', cwd: 'C:\\projS2' }, { agent: 'a1' })
   assert.equal(res.ok, true)
   assert.equal(res.backend, 'codebuddy', '非法偏好应回落默认 codebuddy')
   assert.ok(!sub.spawns[0].argv.includes('--model'), '非法默认模型不应注入')
-  assert.equal(sub.spawns[0].env, undefined, 'codebuddy 后端不注入 env')
+  // 夹具里 codebuddy 的登录域是 www.codebuddy.cn，而 product 端点是 www.codebuddy.ai
+  // → 必须注入端点覆盖，否则 401（这正是 v1.3.1 修掉的既存缺陷）。
+  assert.equal((sub.spawns[0].env || {}).CODEBUDDY_BASE_URL, 'https://www.codebuddy.cn/v2')
 })
 
 test('apply(ctx, config)：旧 dsh settings 兼容通道（provider/document 鸭子探测）', async () => {
@@ -186,7 +213,7 @@ test('apply(ctx, config)：旧 dsh settings 兼容通道（provider/document 鸭
   assert.ok(registered, '应向老 settings 注册 namespace')
   assert.equal(registered.ns, 'codebuddy-bridge')
   // 老 settings resolve 用 schema(mergedValue)：鸭子 callable 必须可用
-  const resolved = registered.schema({ preferredBackend: 'workbuddy', defaultModel: 'kimi-k2.5', codebuddyEnBaseUrl: undefined })
+  const resolved = registered.schema({ preferredBackend: 'workbuddy', defaultModel: 'kimi-k2.5', codebuddyEnToken: undefined })
   assert.equal(resolved.preferredBackend, 'workbuddy')
   assert.equal(resolved.defaultModel, 'kimi-k2.5')
   // watch 触发 → 运行时快照热更新 → 下一次调用生效

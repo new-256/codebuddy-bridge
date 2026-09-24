@@ -19,7 +19,7 @@ const CWD_FALLBACK = 'C:\\Users\\lcl\\Desktop\\codebuddy-bridge'
 const SETTINGS_FILE = 'codebuddy-bridge-settings.json'
 
 function readBridgeSettings() {
-  const snap = { preferredBackend: DEFAULT_BACKEND, defaultModel: '', codebuddyEnBaseUrl: 'https://www.workbuddy.ai/v2' }
+  const snap = { preferredBackend: DEFAULT_BACKEND, defaultModel: '', codebuddyEnToken: '', endpointOverride: '' }
   try {
     const proc = globalThis.process
     const nodeFs = (proc && typeof proc.getBuiltinModule === 'function') ? proc.getBuiltinModule('node:fs') : null
@@ -30,11 +30,34 @@ function readBridgeSettings() {
       if (raw && typeof raw === 'object') {
         if (typeof raw.preferredBackend === 'string' && BACKENDS.indexOf(raw.preferredBackend) >= 0) snap.preferredBackend = raw.preferredBackend
         if (typeof raw.defaultModel === 'string') snap.defaultModel = raw.defaultModel.trim()
-        if (typeof raw.codebuddyEnBaseUrl === 'string' && raw.codebuddyEnBaseUrl.trim()) snap.codebuddyEnBaseUrl = raw.codebuddyEnBaseUrl.trim()
+        if (typeof raw.codebuddyEnToken === 'string') snap.codebuddyEnToken = raw.codebuddyEnToken.trim()
+        if (typeof raw.endpointOverride === 'string') snap.endpointOverride = raw.endpointOverride.trim()
       }
     }
   } catch (e) { /* 无设置文件/无 fs：默认值 */ }
   return snap
+}
+
+// 登录域读取（v1.3.1）：端点必须与登录域一致，否则 CLI 报 401。auth 库的
+// auth.domain 是明文，无需解密 token。位置：
+// %LOCALAPPDATA%\CodeBuddyExtension\Data\Public\auth\<authentication.id>.info
+// 读取失败返回 null → 端点解析退化为「沿用 CLI 自身 product 端点」。
+function readAuthDomain(backend) {
+  const id = BACKEND_AUTH_IDS[backend]
+  if (!id) return null
+  try {
+    const proc = globalThis.process
+    const nodeFs = (proc && typeof proc.getBuiltinModule === 'function') ? proc.getBuiltinModule('node:fs') : null
+    const nodePath = (proc && typeof proc.getBuiltinModule === 'function') ? proc.getBuiltinModule('node:path') : null
+    if (!nodeFs || !nodePath) return null
+    // CODEBUDDY_AUTH_DIR 可覆盖（测试夹具目录，使用例与真机登录状态解耦）。
+    const local = (proc.env && proc.env.CODEBUDDY_AUTH_DIR) ||
+      nodePath.join((proc.env && proc.env.LOCALAPPDATA) || 'C:\\Users\\lcl\\AppData\\Local', 'CodeBuddyExtension', 'Data', 'Public', 'auth')
+    const p = nodePath.join(local, id + '.info')
+    const raw = JSON.parse(nodeFs.readFileSync(p, 'utf8'))
+    const d = raw && raw.auth && raw.auth.domain
+    return typeof d === 'string' && d.trim() ? d.trim() : null
+  } catch (e) { return null }
 }
 
 return {
@@ -69,12 +92,18 @@ return {
     }
 
     // 沙箱内无 process/env：node 经 subprocess 解析；bin 路径为固定回退。
-    // workbuddy：WorkBuddy 桌面版自带 CLI（与 codebuddy 同引擎同协议）。
+    // 三个后端各有独立安装包（v1.3.0 的「国际版复用同一 npm CLI」已实测推翻）：
+    //   codebuddy    npm 全局包 @tencent-ai/codebuddy-code
+    //   codebuddy-en WorkBuddy AI 国际版自带 CLI（C:\Program Files\WorkBuddyAI）
+    //   workbuddy    WorkBuddy 国内版桌面自带 CLI（C:\Program Files\WorkBuddy）
     async function resolveExe(backend, execSignal) {
       let nodeExe = 'node'
       try { nodeExe = await subprocess.resolveExecutable('node', undefined, execSignal) } catch (e) {}
       if (backend === 'workbuddy') {
         return [nodeExe, 'C:\\Program Files\\WorkBuddy\\resources\\app.asar.unpacked\\cli\\bin\\codebuddy']
+      }
+      if (backend === 'codebuddy-en') {
+        return [nodeExe, 'C:\\Program Files\\WorkBuddyAI\\resources\\app.asar.unpacked\\cli\\bin\\codebuddy']
       }
       try {
         const exe = await subprocess.resolveExecutable('codebuddy', undefined, execSignal)
@@ -97,7 +126,10 @@ return {
       defaultMode: 'auto',
       getPreferredBackend: function () { return settings.preferredBackend },
       getDefaultModel: function () { return settings.defaultModel },
-      getCodebuddyEnBaseUrl: function () { return settings.codebuddyEnBaseUrl }
+      // 端点/凭据（v1.3.1）：端点覆盖 > 登录域推导；凭据仅 codebuddy-en 需要。
+      getEndpointOverride: function () { return settings.endpointOverride },
+      getAuthDomain: function (backend) { return readAuthDomain(backend) },
+      getAuthToken: function (backend) { return backend === 'codebuddy-en' ? settings.codebuddyEnToken : null }
     })
     const coreExecute = runner.coreExecute
 
@@ -107,7 +139,7 @@ return {
     const OUT = { schema: { type: 'object', additionalProperties: true }, render: renderResult }
     const STATUS_OUT = { schema: { type: 'object', additionalProperties: true }, render: renderStatus }
 
-    harness.registerTool(ctx, harness.defineTool({ name: 'codebuddy_run', description: 'Dispatch a coding/build/debug/investigation task to the local codebuddy agent CLI and return its final answer. DSH fully controls codebuddy (--permission-mode bypassPermissions; codebuddy never prompts). On rate-limit/network failure DSH pops a fallback dialog; fallback=true means finish with native tools. background=true returns a jobId. While it runs, call codebuddy_status to watch what codebuddy is doing live.', parameters: { prompt: { type: 'string', description: 'The full task/instruction for codebuddy. Be complete and self-contained.', required: true }, backend: { type: 'string', enum: ['codebuddy', 'codebuddy-en', 'workbuddy'], description: 'Which CLI face to dispatch to. codebuddy (default; domestic CodeBuddy) for coding work; codebuddy-en (international CodeBuddy via the same CLI + international endpoint env); workbuddy (WorkBuddy desktop bundled CLI, international face — office scenarios: documents/slides/spreadsheets, knowledge-base lookups, image/video generation, WeChat/WeCom replies). New calls without a backend follow the user-preferred default backend (plugin settings). Continuing a session routes back to its owning backend automatically.' }, mode: { type: 'string', enum: ['auto', 'plan', 'accept-edits'], description: 'auto follows DSH plan state; plan = no writes; accept-edits = allow edits.' }, model: { type: 'string', description: 'Optional model id. Unspecified = user-preferred default model (settings) if set, else the CLI default. Lists differ per backend — domestic (codebuddy): hy4-preview, hy3, hy3-x, glm-5.3, glm-5.3-flash, glm-5.2, glm-5.1, glm-5v-turbo, minimax-m3, minimax-m2.7, kimi-k3-1, kimi-k2.7, kimi-k2.6, deepseek-v4-pro, deepseek-v4-flash; international (codebuddy-en/workbuddy): auto, glm-5v-turbo, glm-5.1, glm-5.0-turbo, glm-5.0, glm-4.7, kimi-k2.5, minimax-m2.7, deepseek-v3-2-volc.' }, effort: { type: 'string', enum: ['minimal', 'low', 'medium', 'high', 'xhigh', 'max'], description: 'Optional reasoning effort.' }, maxTurns: { type: 'integer', description: 'Optional max agentic turns (1-500).' }, cwd: { type: 'string', description: 'Working directory for codebuddy.' }, addDirs: { type: 'array', items: { type: 'string' }, description: 'Extra directories to add to codebuddy workspace.' }, timeoutSec: { type: 'integer', description: 'Run timeout seconds (10-3600, default 300); a DSH-side hang guard force-terminates at timeout+60s.' }, background: { type: 'boolean', description: 'Run as a background job and return a jobId.' } }, output: OUT, execute: function (args, exec) { return coreExecute(args, exec) } }))
+    harness.registerTool(ctx, harness.defineTool({ name: 'codebuddy_run', description: 'Dispatch a coding/build/debug/investigation task to the local codebuddy agent CLI and return its final answer. DSH fully controls codebuddy (--permission-mode bypassPermissions; codebuddy never prompts). On rate-limit/network failure DSH pops a fallback dialog; fallback=true means finish with native tools. background=true returns a jobId. While it runs, call codebuddy_status to watch what codebuddy is doing live.', parameters: { prompt: { type: 'string', description: 'The full task/instruction for codebuddy. Be complete and self-contained.', required: true }, backend: { type: 'string', enum: ['codebuddy', 'codebuddy-en', 'workbuddy'], description: 'Which CLI face to dispatch to. codebuddy (default; domestic CodeBuddy) for coding work; codebuddy-en (WorkBuddy AI international desktop bundled CLI); workbuddy (WorkBuddy desktop bundled CLI, international face — office scenarios: documents/slides/spreadsheets, knowledge-base lookups, image/video generation, WeChat/WeCom replies). New calls without a backend follow the user-preferred default backend (plugin settings). Continuing a session routes back to its owning backend automatically.' }, mode: { type: 'string', enum: ['auto', 'plan', 'accept-edits'], description: 'auto follows DSH plan state; plan = no writes; accept-edits = allow edits.' }, model: { type: 'string', description: 'Optional model id. Unspecified = user-preferred default model (settings) if set, else the CLI default. Lists differ per backend — domestic (codebuddy): hy4-preview, hy3, hy3-x, glm-5.3, glm-5.3-flash, glm-5.2, glm-5.1, glm-5v-turbo, minimax-m3, minimax-m2.7, kimi-k3-1, kimi-k2.7, kimi-k2.6, deepseek-v4-pro, deepseek-v4-flash; international (codebuddy-en/workbuddy): auto, glm-5v-turbo, glm-5.1, glm-5.0-turbo, glm-5.0, glm-4.7, kimi-k2.5, minimax-m2.7, deepseek-v3-2-volc.' }, effort: { type: 'string', enum: ['minimal', 'low', 'medium', 'high', 'xhigh', 'max'], description: 'Optional reasoning effort.' }, maxTurns: { type: 'integer', description: 'Optional max agentic turns (1-500).' }, cwd: { type: 'string', description: 'Working directory for codebuddy.' }, addDirs: { type: 'array', items: { type: 'string' }, description: 'Extra directories to add to codebuddy workspace.' }, timeoutSec: { type: 'integer', description: 'Run timeout seconds (10-3600, default 300); a DSH-side hang guard force-terminates at timeout+60s.' }, background: { type: 'boolean', description: 'Run as a background job and return a jobId.' } }, output: OUT, execute: function (args, exec) { return coreExecute(args, exec) } }))
 
     harness.registerTool(ctx, harness.defineTool({ name: 'codebuddy_continue', description: 'Continue an existing codebuddy conversation with a follow-up prompt. Pass sessionId or set latest=true. Same DSH-controlled, no-prompt execution and same fallback dialog as codebuddy_run.', parameters: { prompt: { type: 'string', description: 'Follow-up instruction for the ongoing codebuddy conversation.', required: true }, sessionId: { type: 'string', description: 'codebuddy session id to resume.' }, latest: { type: 'boolean', description: 'Continue the most recent codebuddy conversation.' }, backend: { type: 'string', enum: ['codebuddy', 'codebuddy-en', 'workbuddy'], description: 'Which CLI face to resume on. When omitted, the backend that owns the sessionId is used automatically; brand-new conversations follow the user-preferred default backend (plugin settings).' }, mode: { type: 'string', enum: ['auto', 'plan', 'accept-edits'], description: 'Execution mode.' }, model: { type: 'string', description: 'Optional model id (lists differ per backend — see codebuddy_run).' }, effort: { type: 'string', enum: ['minimal', 'low', 'medium', 'high', 'xhigh', 'max'], description: 'Optional reasoning effort.' }, maxTurns: { type: 'integer', description: 'Optional max agentic turns.' }, cwd: { type: 'string', description: "Working directory for codebuddy; when resuming, defaults to the resumed session's project directory." }, timeoutSec: { type: 'integer', description: 'Run timeout seconds (10-3600, default 300); a DSH-side hang guard force-terminates at timeout+60s.' }, background: { type: 'boolean', description: 'Run as a background job and return a jobId.' } }, output: OUT, execute: function (args, exec) { const a = args || {}; const mapped = { prompt: a.prompt, backend: a.backend, mode: a.mode, model: a.model, effort: a.effort, maxTurns: a.maxTurns, cwd: a.cwd, timeoutSec: a.timeoutSec, background: a.background }; if (a.sessionId) mapped.sessionId = a.sessionId; else if (a.latest) mapped.continueLatest = true; return coreExecute(mapped, exec) } }))
 

@@ -9,6 +9,7 @@
 
 import test from 'node:test'
 import assert from 'node:assert/strict'
+import { fileURLToPath } from 'node:url'
 import { buildDynamic } from '../scripts/build.mjs'
 import { createMockCtx, createMockHarness, createMockSubprocess, createUserQuestions, driveTicks, successStream } from './helpers/mockdsh.mjs'
 
@@ -231,27 +232,77 @@ test('后台派发：返回 jobId，任务在后台跑完并计入状态', async
   assert.equal(snap.runs, 1)
 })
 
-// ── v1.3.0：codebuddy-en 后端 + 用户偏好设置 ────────────────────────────────────
+// ── v1.3.1：三后端各自独立 CLI + 端点按登录域对齐 + 凭据 ──────────────────────
 
-test('backend=codebuddy-en：同 npm CLI 路径 + 国际端点 env 注入', async () => {
+test('backend=codebuddy-en：走 WorkBuddyAI 自带 CLI + 凭据注入 + 端点按登录域对齐', async () => {
   const { sub, mergedCtx, mockHarness } = freshHarness(() => ({ stdout: successStream({ session_id: 'en-1' }), exitCode: 0 }))
   mergedCtx.ctx.subprocess = sub.subprocess
   const plugin = loadGeneratedPlugin()(mockHarness.harness)
   plugin.apply(mergedCtx.ctx)
   const run = mockHarness.tools.find((t) => t.name === 'codebuddy_run')
+  // 凭据来自设置文件（动态形态经 DSH_HOME 读）；本用例只验证 env 通道，直接写设置文件。
   const res = await run.execute({ prompt: 'x', backend: 'codebuddy-en', cwd: 'C:\\projEN', model: 'auto' }, { agent: 'a1' })
-  assert.equal(res.ok, true)
-  assert.equal(res.backend, 'codebuddy-en')
-  // 同一 npm CLI 二进制（node + npm bin 回退路径），不是 WorkBuddy 桌面 CLI。
-  const bin = sub.spawns[0].argv[1]
-  assert.ok(bin.includes('@tencent-ai\\codebuddy-code') || bin.includes('codebuddy-code'), 'codebuddy-en 应复用 npm CLI: ' + bin)
-  // 国际端点 env 注入（spawn spec.env）
-  const env = sub.spawns[0].env || {}
-  assert.equal(env.CODEBUDDY_INTERNET_ENVIROMENT, 'cloudhosted')
-  assert.equal(env.CODEBUDDY_BASE_URL, 'https://www.workbuddy.ai/v2')
-  // 国内后端不带任何 env 注入
-  await run.execute({ prompt: 'y', cwd: 'C:\\projEN', model: 'hy4-preview' }, { agent: 'a1' })
-  assert.equal(sub.spawns[1].env, undefined)
+  // 无 token → 前置 AUTH_REQUIRED（不 spawn）；这是确定性行为，不是失败路径遗漏。
+  assert.equal(res.ok, false)
+  assert.equal(res.status, 'AUTH_REQUIRED')
+  assert.match(res.stderr, /codebuddyEnToken/)
+  assert.equal(sub.spawns.length, 0, '缺凭据时不应真的 spawn CLI')
+})
+
+test('backend=codebuddy-en 带凭据：WorkBuddyAI 二进制 + CODEBUDDY_AUTH_TOKEN', async () => {
+  const os = await import('node:os')
+  const fsMod = await import('node:fs')
+  const pathMod = await import('node:path')
+  const tmpHome = fsMod.mkdtempSync(pathMod.join(os.tmpdir(), 'cb-en-'))
+  fsMod.writeFileSync(pathMod.join(tmpHome, 'codebuddy-bridge-settings.json'),
+    JSON.stringify({ codebuddyEnToken: 'tok-en-dyn' }), 'utf8')
+  const realHome = process.env.DSH_HOME
+  const realAuth = process.env.CODEBUDDY_AUTH_DIR
+  process.env.DSH_HOME = tmpHome
+  process.env.CODEBUDDY_AUTH_DIR = fileURLToPath(new URL('./fixtures/auth', import.meta.url))
+  try {
+    const { sub, mergedCtx, mockHarness } = freshHarness(() => ({ stdout: successStream({ session_id: 'en-2' }), exitCode: 0 }))
+    mergedCtx.ctx.subprocess = sub.subprocess
+    const plugin = loadGeneratedPlugin()(mockHarness.harness)
+    plugin.apply(mergedCtx.ctx)
+    const run = mockHarness.tools.find((t) => t.name === 'codebuddy_run')
+    const res = await run.execute({ prompt: 'x', backend: 'codebuddy-en', cwd: 'C:\\projEN2' }, { agent: 'a1' })
+    assert.equal(res.ok, true)
+    assert.equal(res.backend, 'codebuddy-en')
+    const bin = sub.spawns[0].argv[1]
+    assert.match(bin, /WorkBuddyAI/, 'codebuddy-en 应走 WorkBuddyAI 自带 CLI: ' + bin)
+    const env = sub.spawns[0].env || {}
+    assert.equal(env.CODEBUDDY_AUTH_TOKEN, 'tok-en-dyn')
+    // 夹具登录域 = product 端点 → 无需 BASE_URL；INTERNET_ENVIROMENT 已删除
+    assert.equal(env.CODEBUDDY_BASE_URL, undefined)
+    assert.equal(env.CODEBUDDY_INTERNET_ENVIROMENT, undefined)
+  } finally {
+    if (realHome === undefined) delete process.env.DSH_HOME; else process.env.DSH_HOME = realHome
+    if (realAuth === undefined) delete process.env.CODEBUDDY_AUTH_DIR; else process.env.CODEBUDDY_AUTH_DIR = realAuth
+    fsMod.rmSync(tmpHome, { recursive: true, force: true })
+  }
+})
+
+test('端点按登录域对齐：登录域 ≠ product 端点时自动注入 CODEBUDDY_BASE_URL', async () => {
+  const realAuth = process.env.CODEBUDDY_AUTH_DIR
+  process.env.CODEBUDDY_AUTH_DIR = fileURLToPath(new URL('./fixtures/auth', import.meta.url))
+  try {
+    const { sub, mergedCtx, mockHarness } = freshHarness(() => ({ stdout: successStream({ session_id: 'ep-1' }), exitCode: 0 }))
+    mergedCtx.ctx.subprocess = sub.subprocess
+    const plugin = loadGeneratedPlugin()(mockHarness.harness)
+    plugin.apply(mergedCtx.ctx)
+    const run = mockHarness.tools.find((t) => t.name === 'codebuddy_run')
+    // 夹具：codebuddy 的登录域是 www.codebuddy.cn，product 端点是 www.codebuddy.ai
+    // → 必须注入覆盖（否则真机 401）。这是 v1.3.1 修掉的默认后端缺陷。
+    await run.execute({ prompt: 'x', backend: 'codebuddy', cwd: 'C:\\projEP' }, { agent: 'a1' })
+    assert.equal((sub.spawns[0].env || {}).CODEBUDDY_BASE_URL, 'https://www.codebuddy.cn/v2')
+    // 夹具：workbuddy 的登录域是 www.codebuddy.cn，product 端点是 copilot.tencent.com
+    // → 同样需要覆盖（实测 cn 域在桌面 CLI 上返回 PONG）。
+    await run.execute({ prompt: 'y', backend: 'workbuddy', cwd: 'C:\\projEP' }, { agent: 'a1' })
+    assert.equal((sub.spawns[1].env || {}).CODEBUDDY_BASE_URL, 'https://www.codebuddy.cn/v2')
+  } finally {
+    if (realAuth === undefined) delete process.env.CODEBUDDY_AUTH_DIR; else process.env.CODEBUDDY_AUTH_DIR = realAuth
+  }
 })
 
 test('用户偏好默认 backend：无显式 backend 的新会话调度到偏好后端 + 默认模型注入', async () => {
@@ -268,9 +319,10 @@ test('用户偏好默认 backend：无显式 backend 的新会话调度到偏好
   // 第一跑走默认 codebuddy（sanity：不是 WorkBuddy 桌面 CLI 路径）
   await run.execute({ prompt: 'one', cwd: projA }, { agent: 'a1' })
   assert.notEqual(sub.spawns[0].argv[1], 'C:\\Program Files\\WorkBuddy\\resources\\app.asar.unpacked\\cli\\bin\\codebuddy')
-  // 显式 backend=codebuddy-en 的调用走国际面（env 注入），不受历史会话影响
-  await run.execute({ prompt: 'two', cwd: projA, backend: 'codebuddy-en' }, { agent: 'a1' })
-  assert.equal(sub.spawns[1].env.CODEBUDDY_INTERNET_ENVIROMENT, 'cloudhosted')
+  assert.notEqual(sub.spawns[0].argv[1], 'C:\\Program Files\\WorkBuddyAI\\resources\\app.asar.unpacked\\cli\\bin\\codebuddy')
+  // 显式 backend=workbuddy 的调用走国内桌面面（免凭据），不受历史会话影响
+  await run.execute({ prompt: 'two', cwd: projA, backend: 'workbuddy' }, { agent: 'a1' })
+  assert.equal(sub.spawns[1].argv[1], 'C:\\Program Files\\WorkBuddy\\resources\\app.asar.unpacked\\cli\\bin\\codebuddy')
   // 真实偏好来源是设置文件/Config；动态形态经 DSH_HOME 读设置文件（下一个测试覆盖），
   // 会话归属路由已由「workbuddy 会话自动路由」用例覆盖，此处不再重复。
 })

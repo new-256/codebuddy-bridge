@@ -9,7 +9,8 @@ import {
   isLimited, clampInt, shortLabel, summarizeArgs, parseCodebuddyJson, buildResult,
   buildArgv, fallbackResult, createLineStream, createStatusEngine, renderResult, renderStatus,
   isTransientCliError, failureHint, buildMcpBridgePayload, normalizeMcpBridge, MCP_BRIDGE_FILE,
-  BACKENDS, DEFAULT_BACKEND, isBackend, resolveBackend, intlEndpointEnv
+  BACKENDS, DEFAULT_BACKEND, isBackend, resolveBackend, resolveEndpoint, endpointEnv,
+  endpointMismatchHint, endpointHost, BACKEND_ENDPOINTS, AUTH_DOMAIN_ENDPOINTS, BACKEND_AUTH_IDS
 } from '../core/codebuddy-core.mjs'
 
 // ── clampInt / shortLabel / summarizeArgs ────────────────────────────────────
@@ -492,17 +493,62 @@ test('resolveBackend：显式 > 会话归属 > 用户偏好 > 默认', () => {
   assert.equal(resolveBackend({}, {}, null), 'codebuddy')
 })
 
-test('intlEndpointEnv：仅 codebuddy-en 注入；BASE_URL 可配置；其余后端 null', () => {
-  const env = intlEndpointEnv('codebuddy-en', 'https://www.workbuddy.ai/v2')
-  assert.equal(env.CODEBUDDY_BASE_URL, 'https://www.workbuddy.ai/v2')
-  assert.equal(env.CODEBUDDY_INTERNET_ENVIROMENT, 'cloudhosted')
-  // 空配置：只带 INTERNET_ENVIROMENT，不带空 BASE_URL
-  const env2 = intlEndpointEnv('codebuddy-en', '')
-  assert.equal(env2.CODEBUDDY_BASE_URL, undefined)
-  assert.equal(env2.CODEBUDDY_INTERNET_ENVIROMENT, 'cloudhosted')
-  assert.equal(intlEndpointEnv('codebuddy', 'https://x'), null)
-  assert.equal(intlEndpointEnv('workbuddy', 'https://x'), null)
-  assert.equal(intlEndpointEnv(undefined, null), null)
+test('resolveEndpoint：显式覆盖优先；否则按登录域推导；未知域返回 null', () => {
+  // 显式覆盖最高优先（即使登录域已知）
+  assert.equal(resolveEndpoint('https://custom/v2', 'www.codebuddy.cn'), 'https://custom/v2')
+  // 登录域推导（实测可用端点）
+  assert.equal(resolveEndpoint('', 'www.codebuddy.cn'), 'https://www.codebuddy.cn/v2')
+  assert.equal(resolveEndpoint(null, 'copilot.tencent.com'), 'https://copilot.tencent.com/v2')
+  assert.equal(resolveEndpoint('', 'www.workbuddy.ai'), 'https://www.workbuddy.ai/v2')
+  // 未知/缺失登录域 → null（沿用 CLI 自身 product 端点）
+  assert.equal(resolveEndpoint('', ''), null)
+  assert.equal(resolveEndpoint(null, null), null)
+  assert.equal(resolveEndpoint('', 'example.com'), null)
+})
+
+test('endpointEnv：仅当端点与 product 端点不同才注入 BASE_URL；不再注入 INTERNET_ENVIROMENT', () => {
+  // 默认后端 codebuddy：product 端点是 www.codebuddy.ai，登录域是 www.codebuddy.cn
+  // → 必须注入覆盖，否则 401（这是功能修复，不是优化）。
+  const env = endpointEnv('codebuddy', null, 'www.codebuddy.cn', null)
+  assert.equal(env.CODEBUDDY_BASE_URL, 'https://www.codebuddy.cn/v2')
+  // 域与 product 端点一致时无需注入
+  assert.equal(endpointEnv('codebuddy', null, 'www.codebuddy.ai', null), null)
+  // 已删除的错误行为：无条件 cloudhosted 声明（www.workbuddy.ai 属 externalDomain）
+  assert.equal(env.CODEBUDDY_INTERNET_ENVIROMENT, undefined)
+  // workbuddy：登录域与 product 端点一致 → 不注入
+  assert.equal(endpointEnv('workbuddy', null, 'copilot.tencent.com', null), null)
+  // 显式覆盖始终生效
+  assert.equal(endpointEnv('codebuddy-en', 'https://x/v2', 'www.workbuddy.ai', null).CODEBUDDY_BASE_URL, 'https://x/v2')
+})
+
+test('endpointEnv：codebuddy-en 的 token 经 CODEBUDDY_AUTH_TOKEN 下发；其他后端不下发', () => {
+  const env = endpointEnv('codebuddy-en', null, 'www.workbuddy.ai', 'tok-123')
+  assert.equal(env.CODEBUDDY_AUTH_TOKEN, 'tok-123')
+  // token 不影响端点（端点由登录域决定）
+  assert.equal(env.CODEBUDDY_BASE_URL, undefined)
+  // 空 token 不注入
+  assert.equal(endpointEnv('codebuddy-en', null, 'www.workbuddy.ai', '   '), null)
+  // 其他后端即使给了 token 也不下发（各产品面凭据互斥）；但端点仍按登录域对齐。
+  const other = endpointEnv('codebuddy', null, 'www.codebuddy.cn', 'tok')
+  assert.equal(other.CODEBUDDY_AUTH_TOKEN, undefined)
+  assert.equal(other.CODEBUDDY_BASE_URL, 'https://www.codebuddy.cn/v2')
+})
+
+test('endpointMismatchHint：codebuddy-en 缺 token 给出可操作指引；域一致时无提示', () => {
+  const hint = endpointMismatchHint('codebuddy-en', 'www.workbuddy.ai', false)
+  assert.match(hint, /codebuddyEnToken/)
+  assert.match(hint, /workbuddy/)
+  // 有 token 且域与 product 端点一致 → 无提示
+  assert.equal(endpointMismatchHint('codebuddy-en', 'www.workbuddy.ai', true), null)
+  // 域不匹配 → 提示已自动注入端点
+  assert.match(endpointMismatchHint('codebuddy', 'www.codebuddy.cn', false), /CODEBUDDY_BASE_URL/)
+  assert.equal(endpointMismatchHint('codebuddy', 'www.codebuddy.ai', false), null)
+})
+
+test('isLimited/failureHint：AUTH_REQUIRED 不算限流，且透传可操作指引', () => {
+  const res = { ok: false, status: 'AUTH_REQUIRED', stderr: 'token 缺失：请填 codebuddyEnToken' }
+  assert.equal(isLimited(res), false)
+  assert.match(failureHint(res), /codebuddyEnToken/)
 })
 
 test('buildArgv：defaultModel 只在未显式指定 model 时注入 + env 透传', () => {

@@ -36,20 +36,22 @@ import { fileURLToPath } from 'node:url'
 import {
   isLimited, isTransientCliError, failureHint, parseCodebuddyJson, buildResult, buildArgv, createLineStream, createStatusEngine,
   buildMcpBridgePayload, MCP_BRIDGE_FILE,
-  BACKENDS, DEFAULT_BACKEND, resolveBackend, intlEndpointEnv
+  BACKENDS, DEFAULT_BACKEND, resolveBackend, endpointEnv, endpointMismatchHint,
+  BACKEND_AUTH_IDS
 } from '../core/codebuddy-core.mjs'
 
 const NAME = 'codebuddy-mcp-server'
-const VERSION = '1.3.0'
+const VERSION = '1.3.1'
 const PROTOCOL = '2024-11-05'
 
 // Default cwd for codebuddy calls that do not pass one (override: CODEBUDDY_MCP_CWD).
 const CWD_FALLBACK = process.env.CODEBUDDY_MCP_CWD || 'C:\\Users\\lcl\\Desktop\\codebuddy-bridge'
 
-// ── user settings (v1.3.0, shared with the DSH forms) ───────────────────────
+// ── user settings (v1.3.1, shared with the DSH forms) ───────────────────────
 // dsh-home 根目录的 codebuddy-bridge-settings.json：{"preferredBackend": "...",
-// "defaultModel": "...", "codebuddyEnBaseUrl": "..."}。DSH preset 形态的设置面板
-// 与动态形态读写同一份文件；MCP 每次调用前重读，改动即生效。文件缺失 = 默认值。
+// "defaultModel": "...", "codebuddyEnToken": "...", "endpointOverride": "..."}。
+// DSH preset 形态的设置面板与动态形态读写同一份文件；MCP 每次调用前重读，改动即生效。
+// 文件缺失 = 默认值。
 const SETTINGS_FILE = 'codebuddy-bridge-settings.json'
 function resolveSettingsPath() {
   const explicit = process.env.CODEBUDDY_INDICATOR_DIR || process.env.DSH_HOME
@@ -66,14 +68,15 @@ function readSettings() {
   // 5s 缓存：同一批并发调用不重复读盘，改动也足够快生效。
   const now = Date.now()
   if (settingsCache.value && now - settingsCache.at < 5000) return settingsCache.value
-  const snap = { preferredBackend: DEFAULT_BACKEND, defaultModel: '', codebuddyEnBaseUrl: 'https://www.workbuddy.ai/v2' }
+  const snap = { preferredBackend: DEFAULT_BACKEND, defaultModel: '', codebuddyEnToken: '', endpointOverride: '' }
   if (SETTINGS_PATH) {
     try {
       const raw = JSON.parse(readFileSync(SETTINGS_PATH, 'utf8'))
       if (raw && typeof raw === 'object') {
         if (typeof raw.preferredBackend === 'string' && BACKENDS.indexOf(raw.preferredBackend) >= 0) snap.preferredBackend = raw.preferredBackend
         if (typeof raw.defaultModel === 'string') snap.defaultModel = raw.defaultModel.trim()
-        if (typeof raw.codebuddyEnBaseUrl === 'string' && raw.codebuddyEnBaseUrl.trim()) snap.codebuddyEnBaseUrl = raw.codebuddyEnBaseUrl.trim()
+        if (typeof raw.codebuddyEnToken === 'string') snap.codebuddyEnToken = raw.codebuddyEnToken.trim()
+        if (typeof raw.endpointOverride === 'string') snap.endpointOverride = raw.endpointOverride.trim()
       }
     } catch (e) { }
   }
@@ -81,16 +84,36 @@ function readSettings() {
   return snap
 }
 
+// 登录域读取（v1.3.1）：端点必须与登录域一致，否则 CLI 报 401（npm CLI 的 token 域
+// 是 www.codebuddy.cn，product 端点却是 www.codebuddy.ai → 必然 401）。auth 库的
+// auth.domain 是明文，无需解密 token 即可对齐端点。失败返回 null（退化为沿用
+// CLI 自身 product 端点）。
+function readAuthDomain(backend) {
+  const id = BACKEND_AUTH_IDS[backend]
+  if (!id) return null
+  try {
+    // CODEBUDDY_AUTH_DIR 可覆盖（测试夹具目录，使用例与真机登录状态解耦）。
+    const dir = process.env.CODEBUDDY_AUTH_DIR || joinPath(
+      process.env.LOCALAPPDATA || 'C:\\Users\\lcl\\AppData\\Local',
+      'CodeBuddyExtension', 'Data', 'Public', 'auth')
+    const p = joinPath(dir, id + '.info')
+    const raw = JSON.parse(readFileSync(p, 'utf8'))
+    const d = raw && raw.auth && raw.auth.domain
+    return typeof d === 'string' && d.trim() ? d.trim() : null
+  } catch (e) { return null }
+}
+
 // ── CLI command resolution ────────────────────────────────────────────────────
-// Three backends share the same engine and stream-json protocol:
-//   codebuddy (default) — domestic Tencent CodeBuddy Code (copilot.tencent.com),
-//                         coding scenarios.
-//   codebuddy-en        — international CodeBuddy (workbuddy.ai): the SAME npm
-//                         CLI binary; the endpoint switch happens via env
-//                         injection (CODEBUDDY_BASE_URL, see intlEndpointEnv).
-//   workbuddy           — the CLI bundled inside the WorkBuddy desktop app
-//                         (international product face: docs/slides, knowledge
-//                         base, media gen, WeChat/WeCom replies).
+// Three backends, three DISTINCT installs (v1.3.0's "international edition reuses
+// the same npm CLI" claim was disproven on the real machine — each product has its
+// own product.json identity; see docs/ROOT-CAUSE-codebuddy-en.md):
+//   codebuddy (default) — domestic CodeBuddy npm package (@tencent-ai/codebuddy-code,
+//                         productName "CodeBuddy", product endpoint www.codebuddy.ai).
+//   codebuddy-en        — WorkBuddy AI international desktop bundled CLI
+//                         (productName "WorkBuddy AI", endpoint www.workbuddy.ai).
+//   workbuddy           — WorkBuddy domestic desktop bundled CLI
+//                         (productName "WorkBuddy", endpoint copilot.tencent.com).
+// All three share the engine and stream-json protocol.
 // Prefer node + the bin script (codebuddy is normally NOT on PATH, and its
 // .cmd shim cannot be spawned by Node without a shell — CVE-2024-27980); fall
 // back to a bare `codebuddy` for PATH/native installs.
@@ -99,6 +122,10 @@ function commandFor(backend) {
   if (backend === 'workbuddy') {
     const wbBin = process.env.WORKBUDDY_BIN || 'C:\\Program Files\\WorkBuddy\\resources\\app.asar.unpacked\\cli\\bin\\codebuddy'
     return [nodeExe, wbBin]
+  }
+  if (backend === 'codebuddy-en') {
+    const enBin = process.env.CODEBUDDY_EN_BIN || 'C:\\Program Files\\WorkBuddyAI\\resources\\app.asar.unpacked\\cli\\bin\\codebuddy'
+    return [nodeExe, enBin]
   }
   const envBin = process.env.CODEBUDDY_BIN
   if (envBin && existsSync(envBin)) return [nodeExe, envBin]
@@ -111,6 +138,9 @@ function commandFor(backend) {
 function backendUnavailable(backend, prefix) {
   if (backend === 'workbuddy' && !existsSync(prefix[1] || '')) {
     return 'WorkBuddy CLI not found at "' + (prefix[1] || '') + '" — install the WorkBuddy desktop app (the CLI ships with it at <install>\\resources\\app.asar.unpacked\\cli\\bin\\codebuddy) or set WORKBUDDY_BIN.'
+  }
+  if (backend === 'codebuddy-en' && !existsSync(prefix[1] || '')) {
+    return 'WorkBuddy AI (international) CLI not found at "' + (prefix[1] || '') + '" — install the WorkBuddy AI desktop app (the CLI ships with it at <install>\\resources\\app.asar.unpacked\\cli\\bin\\codebuddy) or set CODEBUDDY_EN_BIN.'
   }
   return null
 }
@@ -182,14 +212,26 @@ function runCodebuddy(args) {
     const settings = readSettings()
     const target = engine.resolveTarget(args, CWD_FALLBACK)
     const backend = resolveBackend(args, target, settings.preferredBackend)
+    // 端点/凭据（v1.3.1）：端点按登录域自动对齐（修 codebuddy 的 401）；凭据仅
+    // codebuddy-en 需要（其 token 被桌面 App 的 protector key 封装，headless 读不到）。
+    const authDomain = readAuthDomain(backend)
+    const authToken = backend === 'codebuddy-en' ? settings.codebuddyEnToken : null
+    if (backend === 'codebuddy-en' && !authToken) {
+      resolve({
+        ok: false, status: 'AUTH_REQUIRED', response: '', sessionId: null, durationSeconds: null,
+        numTurns: null, totalTokens: null, exitCode: null, mode: 'accept-edits', backend: backend,
+        stderr: endpointMismatchHint(backend, authDomain, false)
+      })
+      return
+    }
     const prefix = commandFor(backend)
     const built = buildArgv(prefix, args, {
       defaultMode: 'accept-edits',
       defaultModel: (args && args.model) ? null : settings.defaultModel,
-      env: intlEndpointEnv(backend, settings.codebuddyEnBaseUrl)
+      env: endpointEnv(backend, settings.endpointOverride, authDomain, authToken)
     })
     const { argv, timeoutSec } = built
-    // codebuddy-en 的国际端点注入（CODEBUDDY_BASE_URL / INTERNET_ENVIROMENT）。
+    // 端点覆盖/凭据注入（CODEBUDDY_BASE_URL / CODEBUDDY_AUTH_TOKEN）。
     const spawnEnv = (built.env && typeof built.env === 'object') ? { ...process.env, ...built.env } : undefined
     // codebuddy/workbuddy 会话按项目目录（cwd）归档：续接（--resume/--continue）
     // 未显式给 cwd 时，优先回落到该 session 所在项目的 cwd，否则换个目录会
@@ -347,12 +389,12 @@ function statusText(filterCwd) {
 const TOOLS = [
   {
     name: 'codebuddy_run',
-    description: 'Dispatch a coding/build/debug/investigation task to the local codebuddy agent CLI (Tencent CodeBuddy Code) and return its final answer. codebuddy runs fully non-interactively with permissions auto-approved (--permission-mode bypassPermissions, never prompts) and applies edits directly. Prefer it for implementation, multi-file edits, refactors and debugging; use your own tools for quick read-only lookups and final build/test verification. mode=plan runs codebuddy read-only. Optional model/effort/maxTurns select the codebuddy model and caps; timeoutSec (10-3600, default 300) is a server-side hang guard. While it runs, call codebuddy_status to watch what codebuddy is doing live. backend="codebuddy-en" (international CodeBuddy via the same CLI + international endpoint env) and backend="workbuddy" (WorkBuddy desktop bundled CLI; office-scenario product face: documents/slides/spreadsheets, knowledge-base lookups, image/video generation, WeChat/WeCom replies) route to the international product faces.',
+    description: 'Dispatch a coding/build/debug/investigation task to the local codebuddy agent CLI (Tencent CodeBuddy Code) and return its final answer. codebuddy runs fully non-interactively with permissions auto-approved (--permission-mode bypassPermissions, never prompts) and applies edits directly. Prefer it for implementation, multi-file edits, refactors and debugging; use your own tools for quick read-only lookups and final build/test verification. mode=plan runs codebuddy read-only. Optional model/effort/maxTurns select the codebuddy model and caps; timeoutSec (10-3600, default 300) is a server-side hang guard. While it runs, call codebuddy_status to watch what codebuddy is doing live. backend="codebuddy-en" (WorkBuddy AI international desktop bundled CLI) and backend="workbuddy" (WorkBuddy domestic desktop bundled CLI; office-scenario product face: documents/slides/spreadsheets, knowledge-base lookups, image/video generation, WeChat/WeCom replies) route to the other product faces.',
     inputSchema: {
       type: 'object',
       properties: {
         prompt: { type: 'string', description: 'The full task/instruction for codebuddy. Be complete and self-contained.' },
-        backend: { type: 'string', enum: ['codebuddy', 'codebuddy-en', 'workbuddy'], description: 'codebuddy (default) for coding work (domestic); codebuddy-en for international CodeBuddy (same CLI, endpoint env injected); workbuddy for international office tasks (docs/slides, knowledge base, media generation, WeChat/WeCom replies). New calls without a backend follow the user-preferred default backend (settings file). Continuing a session routes back to its owning backend automatically.' },
+        backend: { type: 'string', enum: ['codebuddy', 'codebuddy-en', 'workbuddy'], description: 'codebuddy (default) for coding work (domestic CodeBuddy npm CLI); codebuddy-en for the WorkBuddy AI international desktop CLI (needs codebuddyEnToken in the settings file — its login token is sealed by a protector key the headless CLI cannot read); workbuddy for the WorkBuddy domestic desktop CLI, also the office-scenario face (docs/slides, knowledge base, media generation, WeChat/WeCom replies). New calls without a backend follow the user-preferred default backend (settings file). Continuing a session routes back to its owning backend automatically.' },
         mode: { type: 'string', enum: ['plan', 'accept-edits'], description: 'plan = no writes; accept-edits = allow edits (default).' },
         model: { type: 'string', description: 'Optional model id. Unset = user-preferred default model (settings file) if set, else the CLI configured default. Lists differ per backend — domestic (codebuddy): hy4-preview, hy3, hy3-x, glm-5.3, glm-5.3-flash, glm-5.2, glm-5.1, glm-5v-turbo, minimax-m3, minimax-m2.7, kimi-k3-1, kimi-k2.7, kimi-k2.6, deepseek-v4-pro, deepseek-v4-flash; international (codebuddy-en/workbuddy): auto, glm-5v-turbo, glm-5.1, glm-5.0-turbo, glm-5.0, glm-4.7, kimi-k2.5, minimax-m2.7, deepseek-v3-2-volc.' },
         effort: { type: 'string', enum: ['minimal', 'low', 'medium', 'high', 'xhigh', 'max'], description: 'Optional reasoning effort.' },

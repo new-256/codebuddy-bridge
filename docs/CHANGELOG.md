@@ -2,7 +2,54 @@
 
 本项目遵循 [语义化版本](https://semver.org/)；版本号同步 `package.json`、Git tag 与 GitHub Release（`npm run check` 中的 `scripts/verify.mjs` 在 CI 里锁三处一致）。
 
+## [1.3.1] - 2026-09-24
+
+**端点与凭据根因修复**：v1.3.0 关于国际版的机制结论（「国际版没有独立安装包，就是同一个 npm CLI + 端点 env」）经真机全盘核实**已被推翻**；本版据实测矩阵重写端点解析，并修复了一个影响**默认后端**的既存缺陷。
+
+### 推翻 v1.3.0 的错误结论（真机证据）
+
+- **三个产品面各有独立安装包与独立 `product.json`**，不是同一个 CLI：
+
+  | 后端 | 二进制 | productName | product 端点 | authentication.id |
+  |---|---|---|---|---|
+  | `codebuddy` | `%APPDATA%\npm\node_modules\@tencent-ai\codebuddy-code` | CodeBuddy | `www.codebuddy.ai` | `Tencent-Cloud.coding-copilot` |
+  | `codebuddy-en` | `C:\Program Files\WorkBuddyAI\...\cli\bin\codebuddy` | WorkBuddy AI | `www.workbuddy.ai` | `workbuddy-desktop-ai` |
+  | `workbuddy` | `C:\Program Files\WorkBuddy\...\cli\bin\codebuddy` | WorkBuddy | `copilot.tencent.com` | `workbuddy-desktop` |
+
+  （`C:\Users\lcl\AppData\Local\Programs\CodeBuddy` 即 CodeBuddy IDE **不附带** headless CLI，`resources/app.asar.unpacked/cli` 不存在，不可作二进制来源。）
+- **`CODEBUDDY_AUTH_TOKEN` 本身不决定端点**：token 只在其登录域对应的端点上生效。实测：国内 token（域 `www.codebuddy.cn`）配 `workbuddy.ai/v2` → 401；配 `copilot.tencent.com/v2` → PONG。
+- **`CODEBUDDY_INTERNET_ENVIROMENT=cloudhosted` 语义错误已删**：`www.workbuddy.ai` 属 `product.json` 的 `externalDomain`，不是 `cloudHostedDomain`。
+
+### 修复：默认后端 codebuddy 的 401（既存缺陷）
+
+npm CLI 的 product 端点是 `www.codebuddy.ai`，而本机登录 token 的域是 `www.codebuddy.cn` —— **域不匹配必然 401**。这正是用户会话日志中 312 次 `www.codebuddy.ai` 与 116 次 `Authentication required` 的根因：默认后端此前是坏的。实测注入 `CODEBUDDY_BASE_URL=https://www.codebuddy.cn/v2` 即恢复 PONG。
+
+### 新机制：端点按登录域自动对齐
+
+- 新增纯函数 `resolveEndpoint()` / `endpointEnv()` / `endpointMismatchHint()` / `endpointHost()` 与注册表 `BACKEND_ENDPOINTS` / `AUTH_DOMAIN_ENDPOINTS` / `BACKEND_AUTH_IDS`（取代 `intlEndpointEnv`）。
+- 宿主侧读 `%LOCALAPPDATA%\CodeBuddyExtension\Data\Public\auth\<authentication.id>.info` 的 **`auth.domain`（三个文件均为明文）**，无需解密 token 即可对齐端点；读取失败一律回退为「沿用 CLI 自身 product 端点」。
+- **仅当推导端点与后端 product 端点不同时才注入** `CODEBUDDY_BASE_URL`，避免无谓覆盖。
+
+### `codebuddy-en` 凭据通道
+
+国际版 token 被 protector key（keyId `9127dea1b44020a7`）封装，该密钥**只经桌面 App 的 sidecar 通道下发、不落盘**——全盘 51612 个文件扫描、全部 DPAPI blob 解包尝试均未命中，且 CLI 自身亦以 `category:"missing-key"` 失败 21 次（`at-rest-failures-v1.json`），证明这不是探针假象。故：
+
+- 新增设置项 **`codebuddyEnToken`** → 注入 `CODEBUDDY_AUTH_TOKEN`；新增 **`endpointOverride`** 取代 `codebuddyEnBaseUrl`（后者默认值错误，已移除）。
+- 缺 token 时 `codebuddy-en` 前置返回 `AUTH_REQUIRED` 并附**可操作指引**（而非让 CLI 报一句无从下手的 `Authentication required`）；`isLimited` 将该状态排除出限流类，`failureHint` 透传指引。
+- `codebuddy-en` 的二进制改指 WorkBuddyAI 自带 CLI（`CODEBUDDY_EN_BIN` 可覆盖），不再复用 npm CLI。
+
+### 测试与文档
+
+- 测试改写：`intlEndpointEnv` 4 例断言（含已删除的 `INTERNET_ENVIROMENT`）→ 新增 `resolveEndpoint`/`endpointEnv`/`endpointMismatchHint`/`AUTH_REQUIRED` 归类共 5 例；`dynamic-sim`/`preset`/`mcp` 中依赖旧设置键与旧 env 的用例同步更新。
+- 新增 [docs/ROOT-CAUSE-codebuddy-en.md](ROOT-CAUSE-codebuddy-en.md)：完整实测矩阵（11 组后端 × 端点 × token 组合）与根因链。
+
 ## [1.3.0] - 2026-09-24
+
+> **勘误（v1.3.1 更正）**：本版对国际版机制的结论「国际版没有独立 npm 包，就是同一个
+> `@tencent-ai/codebuddy-code` CLI + 端点切换」**已被真机 `product.json` 推翻** —— 三个产品面
+> 各有独立安装包（`productName` / `dataFolderName` / `endpoint` / `auth.id` 全不同），且
+> `CODEBUDDY_INTERNET_ENVIROMENT=cloudhosted` 语义错误、`codebuddyEnBaseUrl` 默认值对默认后端有害。
+> 详见 [1.3.1] 与 [ROOT-CAUSE-codebuddy-en.md](ROOT-CAUSE-codebuddy-en.md)。
 
 **CodeBuddy 国际版接入 + 插件设置**：后端列表新增第三个条目 `codebuddy-en`（国际版 CodeBuddy / WorkBuddy 国际面），并在 DSH 设置面板提供「优先 CLI + 默认模型」两项用户偏好。
 
