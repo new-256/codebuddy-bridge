@@ -46,12 +46,15 @@ export const MAX_SESSIONS = 256
 // 端点与后端 product 端点不同才注入覆盖，避免无谓覆盖。
 // 会话存储：CLI 按端点归档会话（~/.codebuddy 单一目录），但各产品面登录互斥——
 // 同一 sessionId 只在其登录域内有效，sessions 表照旧按 backend 记录归属即可。
-export const BACKENDS = ['codebuddy', 'codebuddy-en', 'workbuddy']
+export const BACKENDS = ['codebuddy', 'codebuddy-intl', 'codebuddy-en', 'workbuddy']
 
 // 各后端的 product 端点（来自 product.json 的 endpoint，补 /v2 —— resolveModelBaseURL
 // 只给 product 端点补 /v2，env 覆盖值按原样使用，故覆盖值必须自带 /v2）。
+// codebuddy-intl（v1.4.0）：同一个 npm CLI 跑国际产品面（product.ioa.json），
+// 端点与 codebuddy 国内面不同（ioa 面走国际网关）。
 export const BACKEND_ENDPOINTS = {
   'codebuddy': 'https://www.codebuddy.ai/v2',
+  'codebuddy-intl': 'https://www.codebuddy.ai/v2',
   'codebuddy-en': 'https://www.workbuddy.ai/v2',
   'workbuddy': 'https://copilot.tencent.com/v2'
 }
@@ -66,8 +69,11 @@ export const AUTH_DOMAIN_ENDPOINTS = {
 }
 
 // 各后端的 authentication.id（product.json），用于定位 auth 库中的凭据文件。
+// codebuddy-intl 与 codebuddy 共用同一个 npm CLI 安装，authentication.id 相同
+// （同一份 product.json 的 authentication.id 决定凭据文件名），故本地凭据与国内面一致。
 export const BACKEND_AUTH_IDS = {
   'codebuddy': 'Tencent-Cloud.coding-copilot',
+  'codebuddy-intl': 'Tencent-Cloud.coding-copilot',
   'codebuddy-en': 'workbuddy-desktop-ai',
   'workbuddy': 'workbuddy-desktop'
 }
@@ -98,13 +104,122 @@ export function resolveEndpoint(explicitBaseUrl, authDomain) {
 
 export const DEFAULT_BACKEND = 'codebuddy'
 
-// 各后端的可选模型（来自两个已装 CLI `--help` 实测，v1.3.0/v1.3.1 的模型清单）：
-// 国内面（codebuddy，npm 包）与国际面（codebuddy-en / workbuddy）列表不同。
-// 设置面板据此渲染下拉候选；留空 = 各 CLI 自己的默认。
+// 各后端的可选模型。
+//
+// v1.4.0 修正：v1.3.x 的清单是错的 —— codebuddy-en / workbuddy 两份抄的是**国内版
+// `product.internal.json`**，且含若干本机不存在的型号（hy4-preview / glm-5.3 /
+// kimi-k2.5 等）。现在改为**运行时从各安装自己的 product 描述文件现读**（见
+// readBackendModelCatalog），下面的静态表仅作文件缺失时的回退，取值来自真机实测。
+//
+// 真机实测（2026-09-25）：
+//   codebuddy(npm v2.158.0, --help)      : glm-5.2, kimi-k2.6, minimax-m2.7,
+//                                          claude-opus-4.8-1m, claude-opus-4.8,
+//                                          gpt-5.4, deepseek-v4-flash, deepseek-v4-pro,
+//                                          default, deepseek-v3-0324
+//   codebuddy-intl(npm product.ioa.json) : 37 项国际面（claude-sonnet-5 / claude-opus-5 /
+//                                          gemini-3.1-pro / gpt-6-astra / hy3-ioa …）
+//   codebuddy-en(WorkBuddyAI product.json): 37 项（default-model / fast-model /
+//                                          balanced-model / primary-model / deep-model /
+//                                          gpt-5.5 / gpt-5.6-* / gemini-3.* / glm-5.3 …）
+//   workbuddy(WorkBuddy product.cloudhosted.json): 23 项（default / deepseek-v3-2-volc /
+//                                          glm-4.7 / glm-5.1 / hunyuan-chat / …）
 export const BACKEND_MODEL_IDS = {
-  'codebuddy': ['hy4-preview', 'hy3', 'hy3-x', 'glm-5.3', 'glm-5.3-flash', 'glm-5.2', 'glm-5.1', 'glm-5v-turbo', 'minimax-m3', 'minimax-m2.7', 'kimi-k3-1', 'kimi-k2.7', 'kimi-k2.6', 'deepseek-v4-pro', 'deepseek-v4-flash'],
-  'codebuddy-en': ['auto', 'glm-5v-turbo', 'glm-5.1', 'glm-5.0-turbo', 'glm-5.0', 'glm-4.7', 'kimi-k2.5', 'minimax-m2.7', 'deepseek-v3-2-volc'],
-  'workbuddy': ['auto', 'glm-5v-turbo', 'glm-5.1', 'glm-5.0-turbo', 'glm-5.0', 'glm-4.7', 'kimi-k2.5', 'minimax-m2.7', 'deepseek-v3-2-volc']
+  'codebuddy': ['glm-5.2', 'kimi-k2.6', 'minimax-m2.7', 'claude-opus-4.8-1m', 'claude-opus-4.8', 'gpt-5.4', 'deepseek-v4-flash', 'deepseek-v4-pro', 'default', 'deepseek-v3-0324'],
+  'codebuddy-intl': ['default-model', 'fast-model', 'balanced-model', 'primary-model', 'deep-model', 'hy4-preview-ioa', 'hy3-ioa', 'claude-sonnet-5', 'claude-sonnet-5-1m', 'claude-opus-5', 'claude-opus-4.8', 'claude-opus-4.8-1m', 'gemini-3.1-pro', 'gemini-3.5-flash', 'gpt-6-astra', 'gpt-5.6-sol', 'gpt-5.6-terra', 'gpt-5.6-luna', 'gpt-5.5', 'gpt-5.4', 'glm-5.3-ioa', 'glm-5.3-flash-ioa', 'glm-5.2-ioa', 'kimi-k3-ioa', 'kimi-k2.8-preview', 'kimi-k2.6-ioa', 'minimax-m3-ioa', 'minimax-m2.7-ioa', 'deepseek-v4.1-flash', 'deepseek-v4-pro-ioa'],
+  'codebuddy-en': ['default-model', 'default-model-lite', 'fast-model', 'balanced-model', 'primary-model', 'deep-model', 'gpt-5.6-sol', 'gpt-5.6-terra', 'gpt-5.6-luna', 'gpt-5.5', 'gpt-5.4', 'gpt-5.3-codex', 'gpt-5.1-codex', 'gemini-3.1-pro', 'gemini-3.5-flash', 'gemini-3.0-flash', 'gemini-2.5-pro', 'glm-5.3', 'glm-5.2', 'glm-5.0', 'kimi-k3', 'kimi-k2.6', 'kimi-k2.5', 'minimax-m3', 'hy3', 'deepseek-v3-2-volc'],
+  'workbuddy': ['default', 'deepseek-v3-2-volc', 'deepseek-v3.1', 'deepseek-v3-0324', 'deepseek-v4-pro', 'deepseek-v4-flash', 'glm-5.1', 'glm-5.0', 'glm-4.7', 'glm-4.6', 'hunyuan-chat', 'kimi-k2-thinking', 'minimax-m2.7', 'minimax-m2.5']
+}
+
+// 各后端 product 描述文件的位置（用于运行时读取真实模型清单）。
+// { dir 或 exeDir, file } —— npm CLI 的包根；两个桌面版为其 resources\app.asar.unpacked\cli。
+const PRODUCT_DESCRIPTOR_ENV = {
+  'codebuddy': { env: 'CODEBUDDY_MODELS_FILE', rel: 'product.json' },
+  'codebuddy-intl': { env: 'CODEBUDDY_INTL_MODELS_FILE', rel: 'product.ioa.json' },
+  'codebuddy-en': { env: 'CODEBUDDY_EN_MODELS_FILE', rel: 'product.json' },
+  'workbuddy': { env: 'WORKBUDDY_MODELS_FILE', rel: 'product.cloudhosted.json' }
+}
+
+/** 各后端 product 描述文件的候选路径（按序尝试，返回第一个存在的）。 */
+function productDescriptorCandidates(backend) {
+  const env = (globalThis.process && globalThis.process.env) || {}
+  const spec = PRODUCT_DESCRIPTOR_ENV[backend]
+  if (!spec) return []
+  const out = []
+  if (env[spec.env]) out.push(env[spec.env])
+  const path = builtinPath()
+  const join = path ? path.join : null
+  if (backend === 'codebuddy' || backend === 'codebuddy-intl') {
+    const appdata = env.APPDATA || ''
+    if (appdata && join) out.push(join(appdata, 'npm', 'node_modules', '@tencent-ai', 'codebuddy-code', spec.rel))
+  } else if (backend === 'codebuddy-en') {
+    if (join) out.push(join('C:\\Program Files\\WorkBuddyAI', 'resources', 'app.asar.unpacked', 'cli', spec.rel))
+  } else if (backend === 'workbuddy') {
+    if (join) out.push(join('C:\\Program Files\\WorkBuddy', 'resources', 'app.asar.unpacked', 'cli', spec.rel))
+  }
+  return out
+}
+
+/** 取 node:path（不可用时返回 null，调用方自行兜底）。 */
+function builtinPath() {
+  const proc = globalThis.process
+  try {
+    return (proc && typeof proc.getBuiltinModule === 'function') ? proc.getBuiltinModule('node:path') : null
+  } catch (e) { return null }
+}
+
+/**
+ * 从 product 描述文件里抽取 CLI 主 agent 的模型清单。
+ * 结构：{ agents: [ { name:'cli', models:[...] }, ... ], models: [ {id} | 'id' ] }
+ *
+ * 取「两处里更完整的那份」而不是死认 agents.cli：真机实测两张表的语义不同 ——
+ *   - npm CLI product.json      : agents.cli.models = 21 个真实 id（顶层 models 22 个）
+ *   - WorkBuddyAI product.json  : agents.cli.models = 4 个**角色别名**
+ *                                 (fast/balanced/primary/deep-model)，真实 37 个 id 在顶层 models
+ *   - WorkBuddy cloudhosted     : agents.cli.models = 10 个（顶层 models 23 个）
+ * 因此对两份候选取**去重后元素更多**的那份；并列时优先 agents.cli（它才是 --model 的取值域）。
+ * 只做容错解析，任何异常返回 null（调用方回退静态表）。
+ * @returns {string[]|null}
+ */
+export function extractModelIds(productJson) {
+  try {
+    const obj = typeof productJson === 'string' ? JSON.parse(productJson) : productJson
+    if (!obj || typeof obj !== 'object') return null
+    const pick = (arr) => {
+      if (!Array.isArray(arr) || !arr.length) return null
+      const ids = arr.map((m) => (typeof m === 'string' ? m : m && m.id)).filter((s) => typeof s === 'string' && s.trim())
+      return ids.length ? [...new Set(ids)] : null
+    }
+    const agents = Array.isArray(obj.agents) ? obj.agents : []
+    const cli = agents.find((a) => a && a.name === 'cli')
+    const fromCli = cli ? pick(cli.models) : null
+    const fromTop = pick(obj.models)
+    if (fromCli && fromTop) return fromTop.length > fromCli.length ? fromTop : fromCli
+    return fromCli || fromTop || null
+  } catch (e) { return null }
+}
+
+/**
+ * 运行时读取某后端真实的模型清单（读它自己安装目录里的 product 描述文件）。
+ * 文件缺失/损坏 → 回退 BACKEND_MODEL_IDS 静态表（永不抛错、永不为空）。
+ * @param {string} backend
+ * @param {{readFileSync?:Function}} [io] 测试注入
+ * @returns {string[]}
+ */
+export function readBackendModelCatalog(backend, io) {
+  const fallback = BACKEND_MODEL_IDS[backend] || []
+  const read = (io && io.readFileSync) || ((p, enc) => {
+    const proc = globalThis.process
+    const fs = (proc && typeof proc.getBuiltinModule === 'function') ? proc.getBuiltinModule('node:fs') : null
+    if (!fs) throw new Error('no fs')
+    return fs.readFileSync(p, enc)
+  })
+  for (const p of productDescriptorCandidates(backend)) {
+    try {
+      const ids = extractModelIds(read(p, 'utf8'))
+      if (ids && ids.length) return ids
+    } catch (e) { /* 下一个候选 */ }
+  }
+  return fallback
 }
 
 // 各后端的用户可见名（面板下拉标签；产品面与登录域互斥，故按面分列）。
@@ -113,12 +228,20 @@ export const BACKEND_MODEL_IDS = {
 // 保持 codebuddy-en（历史会话按其归档，不可改），别名见 BACKEND_ALIASES。
 export const BACKEND_LABELS = {
   'codebuddy': 'CodeBuddy 国内版（npm CLI）',
+  'codebuddy-intl': 'CodeBuddy 国际版（npm CLI · 国际面）',
   'codebuddy-en': 'WorkBuddy 国际版（WorkBuddyAI 桌面 CLI）',
   'workbuddy': 'WorkBuddy 国内版（桌面 CLI）'
 }
 
-// 后端参数别名（v1.3.3）：workbuddy-en / workbuddy-ai 规范化到 codebuddy-en。
-export const BACKEND_ALIASES = { 'workbuddy-en': 'codebuddy-en', 'workbuddy-ai': 'codebuddy-en' }
+// 后端参数别名（v1.3.3 起）：workbuddy-en / workbuddy-ai 规范化到 codebuddy-en。
+// v1.4.0 起：codebuddy-intl 也接受 codebuddy-ioa / codebuddy-international 写法。
+export const BACKEND_ALIASES = {
+  'workbuddy-en': 'codebuddy-en',
+  'workbuddy-ai': 'codebuddy-en',
+  'codebuddy-ioa': 'codebuddy-intl',
+  'codebuddy-international': 'codebuddy-intl',
+  'codebuddy-oversea': 'codebuddy-intl'
+}
 
 // ── codebuddy-en 凭据的第三条通道：DSH 自己的凭据库 ─────────────────────────────
 //
@@ -309,19 +432,19 @@ export function readBackendAuthDomain(backend, io) {
  * 后端设置元数据（可视化配置界面渲染用）：候选模型、可见名、product 端点、
  * 凭据是否必需。纯数据 + 只读环境，不触发任何 IO。
  */
-export function backendSettingsMeta(backend) {
+export function backendSettingsMeta(backend, io) {
   return {
     id: backend,
     label: BACKEND_LABELS[backend] || backend,
-    models: BACKEND_MODEL_IDS[backend] || [],
+    models: readBackendModelCatalog(backend, io),
     productEndpoint: BACKEND_ENDPOINTS[backend] || null,
     needsToken: backend === 'codebuddy-en'
   }
 }
 
 /** 全后端元数据（面板渲染下拉与提示用）。 */
-export function allBackendSettingsMeta() {
-  return BACKENDS.map(backendSettingsMeta)
+export function allBackendSettingsMeta(io) {
+  return BACKENDS.map((b) => backendSettingsMeta(b, io))
 }
 
 /**
@@ -464,7 +587,14 @@ export function endpointEnv(backend, explicitBaseUrl, authDomain, authToken) {
  */
 export function endpointMismatchHint(backend, authDomain, hasToken) {
   if (backend === 'codebuddy-en' && !hasToken) {
-    return 'codebuddy-en（WorkBuddy AI 国际版）没有可用凭据。国际版的登录 token 被桌面 App 的 protector key 封装，该密钥不落盘、headless CLI 无法自行读取（CLI 自身报 category:"missing-key"）。桥接会依次尝试：插件设置 codebuddyEnToken → 环境变量 CODEBUDDY_AUTH_TOKEN → DSH 凭据库（.credentials.yaml / .env 里的 WORKBUDDY_TOKEN）——三者皆空。请在 DSH 里配好 workbuddy provider 的 key，或把国际版 token 填入插件设置；也可直接用 backend="workbuddy"（国内版桌面 CLI，免配置）。'
+    return 'codebuddy-en（WorkBuddy 国际版）没有可用凭据。国际版的登录 token 被桌面 App 的 protector key 封装，该密钥不落盘、headless CLI 无法自行读取（CLI 自身报 category:"missing-key"）。桥接会依次尝试：插件设置 codebuddyEnToken → 环境变量 CODEBUDDY_AUTH_TOKEN → DSH 凭据库（.credentials.yaml / .env 里的 WORKBUDDY_TOKEN）——三者皆空。请在 DSH 里配好 workbuddy provider 的 key，或把国际版 token 填入插件设置；也可直接用 backend="workbuddy"（国内版桌面 CLI，免配置）。'
+  }
+  if (backend === 'codebuddy-intl') {
+    // 真机实测（v1.4.0）：同一个 npm CLI 会接受国际面模型 id，但服务端按账号授权放行 ——
+    // `--model claude-sonnet-5` 返回 400 "model [...] is only available for authorized users"，
+    // 而国内面 `--model hy4-preview` 正常返回 PONG。故此处提示与「端点/凭据」无关，
+    // 是账号授权问题，必须明确区分，避免用户误以为是配置错误。
+    return 'codebuddy-intl（CodeBuddy 国际版）使用同一个 npm CLI，但国际面模型由服务端按账号授权放行：未授权时 CLI 返回 400「model [...] is only available for authorized users」。若你用的是国内账号，请改用 backend="codebuddy"（国内面模型清单）或 backend="codebuddy-en"（WorkBuddy 国际版）。'
   }
   const d = String(authDomain || '').trim().toLowerCase()
   if (d && endpointHost(resolveEndpoint(null, d)) !== endpointHost(BACKEND_ENDPOINTS[backend])) {
@@ -982,9 +1112,9 @@ export const POLICY_TEXT = [
   '',
   'Fallback protocol: when codebuddy is rate-limited or the network is down, codebuddy_run/codebuddy_continue automatically pop a confirmation dialog asking the user whether to use the DSH local API config. If the returned result has fallback=true (status FALLBACK_TO_DSH), the user chose to fall back: complete the task with native DSH tools / the local model and DO NOT call codebuddy again for this task. If ok=false without fallback, report the codebuddy error. Never loop codebuddy calls; never ask codebuddy to call back into DSH.',
   '',
-  'Model selection: codebuddy_run takes an optional model. When unspecified, the CLI default applies unless the user set a preferred default model in the plugin settings (then that is injected automatically per call). Supported models differ per backend: "codebuddy" (domestic npm CLI): hy4-preview, hy3, hy3-x, glm-5.3, glm-5.3-flash, glm-5.2, glm-5.1, glm-5v-turbo, minimax-m3, minimax-m2.7, kimi-k3-1, kimi-k2.7, kimi-k2.6, deepseek-v4-pro, deepseek-v4-flash; "codebuddy-en" and "workbuddy" (desktop-bundled CLIs, shared list): auto, glm-5v-turbo, glm-5.1, glm-5.0-turbo, glm-5.0, glm-4.7, kimi-k2.5, minimax-m2.7, deepseek-v3-2-volc. Pass a model only when the task clearly benefits from a specific one; the default is usually right. Optional effort: minimal/low/medium/high/xhigh/max. Optional maxTurns caps agentic turns (default unlimited).',
+  'Model selection: codebuddy_run takes an optional model. When unspecified, the CLI default applies unless the user set a preferred default model in the plugin settings (then that is injected automatically per call). Supported models differ per backend, and the authoritative list is read at runtime from each install own product descriptor: "codebuddy" (domestic npm CLI): glm-5.2, kimi-k2.6, minimax-m2.7, claude-opus-4.8, claude-opus-4.8-1m, gpt-5.4, deepseek-v4-flash, deepseek-v4-pro, default, deepseek-v3-0324; "codebuddy-intl" (same npm CLI, product.ioa.json): claude-sonnet-5, claude-opus-5, claude-opus-4.8, gemini-3.1-pro, gemini-3.5-flash, gpt-6-astra, gpt-5.6-sol/terra/luna, glm-5.3-ioa, kimi-k3-ioa, hy4-preview-ioa …; "codebuddy-en" (WorkBuddyAI): default-model, fast-model, balanced-model, primary-model, deep-model, gpt-5.5, gpt-5.6-*, gemini-3.*, glm-5.3, kimi-k3, kimi-k2.6, hy3 …; "workbuddy" (domestic desktop CLI): default, deepseek-v3-2-volc, deepseek-v4-pro, deepseek-v4-flash, glm-5.1, glm-5.0, glm-4.7, hunyuan-chat, kimi-k2-thinking, minimax-m2.7 … Pass a model only when the task clearly benefits from a specific one; the default is usually right. Optional effort: minimal/low/medium/high/xhigh/max. Optional maxTurns caps agentic turns (default unlimited).',
   '',
-  'Backends: codebuddy_run/codebuddy_continue take an optional backend parameter choosing which CLI face of the same engine (Tencent CodeBuddy Code) runs the task. "codebuddy" is the domestic CodeBuddy (npm CLI @tencent-ai/codebuddy-code, product endpoint www.codebuddy.ai) — default for coding work. "codebuddy-en" is the WorkBuddy INTERNATIONAL edition — the CLI bundled with the WorkBuddyAI desktop app (C:\\Program Files\\WorkBuddyAI, product endpoint www.workbuddy.ai); the aliases "workbuddy-en" and "workbuddy-ai" are also accepted and normalized to codebuddy-en. "workbuddy" is the CLI bundled with the domestic WorkBuddy desktop app (product endpoint copilot.tencent.com, zero config) — the office-scenario face: documents, slides, spreadsheets, knowledge-base lookups, image/video generation, WeChat/WeCom replies. When the user asks for office/document/IM work, dispatch with backend="workbuddy"; for international accounts use "codebuddy-en" (a.k.a. WorkBuddy 国际版 / WorkBuddyAI). Sessions are kept per backend (login domains are exclusive), and continuing a session automatically routes back to the backend that owns it (explicit backend wins). A user-preferred default backend (plugin settings) applies when a call is new (no session) and no explicit backend is given.'
+  'Backends: codebuddy_run/codebuddy_continue take an optional backend parameter choosing which CLI face of the same engine (Tencent CodeBuddy Code) runs the task. "codebuddy" is the domestic CodeBuddy (npm CLI @tencent-ai/codebuddy-code, product endpoint www.codebuddy.ai) — default for coding work. "codebuddy-intl" is the INTERNATIONAL face of that SAME npm CLI (product.ioa.json catalogue: claude-sonnet-5, claude-opus-5, gemini-3.1-pro, gpt-6-astra, hy3-ioa …); use it when the account is an international CodeBuddy account. Its aliases "codebuddy-ioa" and "codebuddy-international" are accepted and normalized to codebuddy-intl. "codebuddy-en" is the WorkBuddy INTERNATIONAL edition — the CLI bundled with the WorkBuddyAI desktop app (C:\\Program Files\\WorkBuddyAI, product endpoint www.workbuddy.ai); the aliases "workbuddy-en" and "workbuddy-ai" are also accepted and normalized to codebuddy-en. "workbuddy" is the CLI bundled with the domestic WorkBuddy desktop app (product endpoint copilot.tencent.com, zero config) — the office-scenario face: documents, slides, spreadsheets, knowledge-base lookups, image/video generation, WeChat/WeCom replies. When the user asks for office/document/IM work, dispatch with backend="workbuddy"; for international accounts use "codebuddy-intl" (CodeBuddy 国际版) or "codebuddy-en" (WorkBuddy 国际版 / WorkBuddyAI). Sessions are kept per backend (login domains are exclusive), and continuing a session automatically routes back to the backend that owns it (explicit backend wins). A user-preferred default backend (plugin settings) applies when a call is new (no session) and no explicit backend is given.'
 ].join('\n')
 
 // ── 执行编排（preset 与 dynamic 共用；MCP 的 stdio 编排见其适配层）──────────

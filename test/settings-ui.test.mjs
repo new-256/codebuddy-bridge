@@ -95,11 +95,16 @@ test('core: writeBridgeSettingsFile rename 失败 → ok:false 且清理 tmp（i
 })
 
 test('core: backendSettingsMeta / diagnoseBackend（诊断视图纯函数）', () => {
-  const metas = core.allBackendSettingsMeta()
-  assert.deepEqual(metas.map((m) => m.id), ['codebuddy', 'codebuddy-en', 'workbuddy'])
-  assert.ok(metas[0].models.includes('hy4-preview'))
-  assert.equal(metas[1].needsToken, true)
+  // 测试注入 io：模型清单来自夹具（真机态下为各安装的 product 描述文件）
+  const io = { readFileSync: () => { throw new Error('fixture: no product.json') } }
+  const metas = core.allBackendSettingsMeta(io)
+  assert.deepEqual(metas.map((m) => m.id), ['codebuddy', 'codebuddy-intl', 'codebuddy-en', 'workbuddy'])
+  // 夹具读不到 product 描述文件 → 回退静态表（回退表即真机实测值）
+  assert.ok(metas[0].models.includes('glm-5.2'), 'codebuddy 回退表含真机型号')
+  assert.ok(metas[1].models.includes('claude-sonnet-5'), 'codebuddy-intl 回退表含国际面型号')
+  assert.equal(metas[2].needsToken, true)
   assert.equal(metas[0].needsToken, false)
+  assert.ok(metas[3].models.includes('deepseek-v3-2-volc'), 'workbuddy 回退表')
   const diag = core.diagnoseBackend('codebuddy', core.defaultBridgeSettings(), { env: {} })
   // 测试夹具登录域 www.codebuddy.cn（mockdsh fixtures/auth）→ 端点应为 cn 域而非 product
   assert.equal(diag.endpointSource, 'auth-domain')
@@ -124,8 +129,8 @@ test('host: maskToken 只回掩码；settingsView 无明文泄漏', () => {
   const v = indicator.settingsView({})
   assert.equal(v.persisted, true)
   assert.equal(v.preferredBackend, 'codebuddy-en')
-  assert.equal(v.diagnostics.length, 3)
-  assert.equal(v.backends.length, 3)
+  assert.equal(v.diagnostics.length, 4)
+  assert.equal(v.backends.length, 4)
   assert.ok(!JSON.stringify(v).includes('secret-token'), 'GET 视图绝不回传 token 明文')
 })
 
@@ -184,7 +189,7 @@ test('host: 路由 GET → 视图 JSON；未保存过时 persisted:false', async
   assert.equal(r.json.persisted, false)
   assert.equal(r.json.preferredBackend, 'codebuddy')
   assert.deepEqual(r.json.codebuddyEnToken, { set: false, hint: '' })
-  assert.equal(r.json.diagnostics.length, 3)
+  assert.equal(r.json.diagnostics.length, 4)
 })
 
 test('host: POST 写入 → GET 读回；非法体 400；非 GET/POST 405', async () => {

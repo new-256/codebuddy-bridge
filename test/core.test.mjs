@@ -13,6 +13,7 @@ import {
   BACKENDS, DEFAULT_BACKEND, isBackend, normalizeBackend, resolveBackend, resolveEndpoint, endpointEnv,
   endpointMismatchHint, endpointHost, BACKEND_ENDPOINTS, AUTH_DOMAIN_ENDPOINTS, BACKEND_AUTH_IDS,
   BACKEND_LABELS, BACKEND_ALIASES,
+  extractModelIds, readBackendModelCatalog,
   resolveEnToken, readDshWorkbuddyToken
 } from '../core/codebuddy-core.mjs'
 
@@ -475,13 +476,14 @@ test('MCP 源码契约：child.stdout 必须声明 utf8 编码', async () => {
   assert.match(src, /child\.stdout\.setEncoding\('utf8'\)/, 'MCP 必须给 child.stdout 设 utf8 编码')
 })
 
-// ── v1.3.0：三后端注册表 + 用户偏好路由 + 国际端点 env ─────────────────────────
+// ── v1.3.0：后端注册表 + 用户偏好路由 + 国际端点 env（v1.4.0 起四后端）─────
 
-test('BACKENDS 注册表：三后端 + isBackend 白名单', () => {
-  assert.deepEqual([...BACKENDS], ['codebuddy', 'codebuddy-en', 'workbuddy'])
+test('BACKENDS 注册表：四后端 + isBackend 白名单', () => {
+  assert.deepEqual([...BACKENDS], ['codebuddy', 'codebuddy-intl', 'codebuddy-en', 'workbuddy'])
   assert.equal(DEFAULT_BACKEND, 'codebuddy')
   for (const b of BACKENDS) assert.equal(isBackend(b), true)
   assert.equal(isBackend('codebuddy-en'), true)
+  assert.equal(isBackend('codebuddy-intl'), true)
   assert.equal(isBackend('bogus'), false)
   assert.equal(isBackend(undefined), false)
 })
@@ -531,6 +533,58 @@ test('BACKEND_LABELS 正名：国际面以 WorkBuddy 国际版（WorkBuddyAI）�
   assert.match(BACKEND_LABELS['codebuddy-en'], /WorkBuddy 国际版/)
   assert.match(BACKEND_LABELS['codebuddy-en'], /WorkBuddyAI/)
   assert.ok(!/CodeBuddy 国际版/.test(BACKEND_LABELS['codebuddy-en']), '旧误导标签不得回潮')
+})
+
+// ── v1.4.0：CodeBuddy 国际版独立后端 + 运行时模型清单 ────────────────────────
+
+test('v1.4.0：codebuddy-intl 是独立后端，别名 codebuddy-ioa / codebuddy-international', () => {
+  assert.ok(BACKENDS.includes('codebuddy-intl'))
+  assert.equal(normalizeBackend('codebuddy-ioa'), 'codebuddy-intl')
+  assert.equal(normalizeBackend('codebuddy-international'), 'codebuddy-intl')
+  assert.equal(normalizeBackend('CodeBuddy-Oversea'), 'codebuddy-intl')
+  assert.equal(resolveBackend({ backend: 'codebuddy-ioa' }, {}, null), 'codebuddy-intl')
+  assert.equal(resolveBackend({}, {}, 'codebuddy-international'), 'codebuddy-intl')
+  assert.match(BACKEND_LABELS['codebuddy-intl'], /CodeBuddy 国际版/)
+  // 与 WorkBuddy 国际版是两个不同选项（用户明确要求区分）
+  assert.notEqual(BACKEND_LABELS['codebuddy-intl'], BACKEND_LABELS['codebuddy-en'])
+  assert.ok(BACKEND_ENDPOINTS['codebuddy-intl'])
+  assert.ok(BACKEND_AUTH_IDS['codebuddy-intl'])
+})
+
+test('extractModelIds：优先取更完整的那份（agents.cli vs 顶层 models）', () => {
+  // WorkBuddyAI 的真实形态：agents.cli 只有 4 个角色别名，顶层 models 才是 37 个真实 id
+  const wbAI = { agents: [{ name: 'cli', models: ['fast-model', 'balanced-model', 'primary-model', 'deep-model'] }], models: [{ id: 'default-model' }, { id: 'gpt-5.5' }, { id: 'gemini-3.1-pro' }, { id: 'kimi-k3' }, { id: 'hy3' }] }
+  assert.deepEqual(extractModelIds(wbAI), ['default-model', 'gpt-5.5', 'gemini-3.1-pro', 'kimi-k3', 'hy3'])
+  // npm CLI 形态：agents.cli(21) 比顶层(22) 少 → 取顶层
+  const npmLike = { agents: [{ name: 'cli', models: ['a', 'b'] }], models: [{ id: 'a' }, { id: 'b' }, { id: 'c' }] }
+  assert.deepEqual(extractModelIds(npmLike), ['a', 'b', 'c'])
+  // agents.cli 更多 → 取 agents.cli
+  const cliHeavier = { agents: [{ name: 'cli', models: ['x', 'y', 'z'] }], models: [{ id: 'x' }] }
+  assert.deepEqual(extractModelIds(cliHeavier), ['x', 'y', 'z'])
+  // 字符串数组也接受，且去重
+  assert.deepEqual(extractModelIds({ models: ['p', 'q', 'p'] }), ['p', 'q'])
+  // 容错：空/坏输入 → null
+  assert.equal(extractModelIds(null), null)
+  assert.equal(extractModelIds('{ not json'), null)
+  assert.equal(extractModelIds({}), null)
+})
+
+test('readBackendModelCatalog：读得到就用文件内容，读不到回退静态表（不抛错）', () => {
+  const fake = { readFileSync: () => JSON.stringify({ models: [{ id: 'from-file-1' }, { id: 'from-file-2' }] }) }
+  assert.deepEqual(readBackendModelCatalog('codebuddy', fake), ['from-file-1', 'from-file-2'])
+  // 抛错 → 回退静态表（真机实测值），且非空
+  const boom = { readFileSync: () => { throw new Error('nope') } }
+  const fb = readBackendModelCatalog('codebuddy', boom)
+  assert.ok(fb.length > 0)
+  assert.ok(fb.includes('glm-5.2'))
+  // 未知后端 → 空数组而不是抛错
+  assert.deepEqual(readBackendModelCatalog('bogus', boom), [])
+})
+
+test('codebuddy-intl 诊断：账号未授权时给出可操作提示（真机 400 文案）', () => {
+  const h = endpointMismatchHint('codebuddy-intl', 'www.codebuddy.cn', false)
+  assert.match(h, /codebuddy-intl/)
+  assert.match(h, /authorized users|授权/)
 })
 
 test('resolveEndpoint：显式覆盖优先；否则按登录域推导；未知域返回 null', () => {
