@@ -9,6 +9,9 @@ import { spawn } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
 import { dirname, join, resolve as resolvePath } from 'node:path'
 
+import { isolateHostState } from './helpers/mockdsh.mjs'
+isolateHostState()
+
 const SERVER = fileURLToPath(new URL('../mcp/codebuddy-mcp-server.mjs', import.meta.url))
 const FAKE_BIN = fileURLToPath(new URL('./fixtures/fake-codebuddy.mjs', import.meta.url))
 const FIXTURES_DIR = dirname(FAKE_BIN)

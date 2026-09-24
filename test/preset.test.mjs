@@ -5,13 +5,12 @@
 
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { fileURLToPath } from 'node:url'
-import { createMockCtx, createMockSubprocess, createUserQuestions, driveTicks, successStream } from './helpers/mockdsh.mjs'
+import { createMockCtx, createMockSubprocess, createUserQuestions, driveTicks, successStream, isolateHostState } from './helpers/mockdsh.mjs'
 
-// 登录域夹具：把 CODEBUDDY_AUTH_DIR 指向 test/fixtures/auth（与真机 auth 库同结构、
-// 同 auth.domain 取值），使用例与「本机是否已登录」彻底解耦 —— 否则端点推导会随
-// 真机登录状态变化，测试结果不可复现。
-process.env.CODEBUDDY_AUTH_DIR = fileURLToPath(new URL('./fixtures/auth', import.meta.url))
+// 真机状态隔离：桥接读 auth 库（登录域）+ dsh-home 凭据库（codebuddy-en token 回退）
+// + DSH_HOME（设置文件）。不隔离则结果随「本机是否登录/是否配过 workbuddy key」变化。
+// 夹具的 auth.domain 与真机同值（www.codebuddy.cn / www.workbuddy.ai），凭据夹具故意为空。
+isolateHostState()
 
 async function loadPreset() {
   // import() 直接接受 file:// URL（Windows 下 pathname 拼接会产生双盘符）

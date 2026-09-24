@@ -11,7 +11,11 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 import { fileURLToPath } from 'node:url'
 import { buildDynamic } from '../scripts/build.mjs'
-import { createMockCtx, createMockHarness, createMockSubprocess, createUserQuestions, driveTicks, successStream } from './helpers/mockdsh.mjs'
+import { createMockCtx, createMockHarness, createMockSubprocess, createUserQuestions, driveTicks, successStream, isolateHostState } from './helpers/mockdsh.mjs'
+
+// 真机状态隔离：动态形态读 auth 库 + dsh-home 凭据库 + DSH_HOME（设置文件）。
+// 不隔离则结果随「本机是否登录/是否配过 workbuddy key」变化，用例不可复现。
+isolateHostState()
 
 function loadGeneratedPlugin() {
   const source = buildDynamic()

@@ -4,6 +4,11 @@
 //   harness: defineTool/registerTool/handle（动态沙箱注入的全局）
 //   subprocess: resolveExecutable/spawn（伪句柄：可脚本化 stdout 分片/stderr/exitCode）
 
+import { fileURLToPath } from 'node:url'
+import { mkdtempSync, rmSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+
 export function createMockCtx(opts) {
   const o = opts || {}
   const services = {}
@@ -117,4 +122,29 @@ export function successStream(overrides) {
     JSON.stringify({ type: 'user', message: { content: [{ type: 'tool_result', tool_use_id: 't1', is_error: false }] } }),
     JSON.stringify(r)
   ].join('\n') + '\n'
+}
+
+// ── 真机状态隔离（v1.3.1）────────────────────────────────────────────────────
+// 桥接会读三类宿主状态：auth 库（登录域）、dsh-home 凭据库（codebuddy-en 的
+// WORKBUDDY_TOKEN 回退）、DSH_HOME（设置文件 + MCP 桥快照）。若不隔离，测试结果会随
+// 「本机是否登录 / 是否配过 workbuddy key」变化 —— 在本机（已登录且有 token）会直接
+// 读真实凭据，用例变成不可复现。所有 test 文件在 import 业务模块前调用本函数。
+//
+// DSH_HOME 用**临时目录**而非仓库内夹具：MCP 用例会往 DSH_HOME 写
+// codebuddy-indicator-mcp.json（家级灯的快照通道），指向仓库会让 `npm test`
+// 在工作区留下未跟踪文件。临时目录在进程退出时清理。
+let _isolatedHome = null
+
+export function isolateHostState() {
+  const fx = new URL('../fixtures/', import.meta.url)
+  if (!_isolatedHome) {
+    _isolatedHome = mkdtempSync(join(tmpdir(), 'cb-isolated-home-'))
+    process.on('exit', () => { try { rmSync(_isolatedHome, { recursive: true, force: true }) } catch { } })
+  }
+  process.env.CODEBUDDY_AUTH_DIR = fileURLToPath(new URL('auth', fx))
+  process.env.CODEBUDDY_CREDENTIALS_DIR = fileURLToPath(new URL('credentials', fx))
+  process.env.DSH_HOME = _isolatedHome
+  // 清掉可能从宿主继承的凭据，避免绕过 dsh-home 直接命中环境变量通道
+  delete process.env.CODEBUDDY_AUTH_TOKEN
+  return _isolatedHome
 }

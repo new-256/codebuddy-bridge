@@ -37,7 +37,7 @@ import {
   isLimited, isTransientCliError, failureHint, parseCodebuddyJson, buildResult, buildArgv, createLineStream, createStatusEngine,
   buildMcpBridgePayload, MCP_BRIDGE_FILE,
   BACKENDS, DEFAULT_BACKEND, resolveBackend, endpointEnv, endpointMismatchHint,
-  BACKEND_AUTH_IDS
+  BACKEND_AUTH_IDS, resolveEnToken
 } from '../core/codebuddy-core.mjs'
 
 const NAME = 'codebuddy-mcp-server'
@@ -215,7 +215,10 @@ function runCodebuddy(args) {
     // 端点/凭据（v1.3.1）：端点按登录域自动对齐（修 codebuddy 的 401）；凭据仅
     // codebuddy-en 需要（其 token 被桌面 App 的 protector key 封装，headless 读不到）。
     const authDomain = readAuthDomain(backend)
-    const authToken = backend === 'codebuddy-en' ? settings.codebuddyEnToken : null
+    // 凭据三通道（v1.3.1）：设置文件 > CODEBUDDY_AUTH_TOKEN 环境变量 > DSH 凭据库
+    // （.credentials.yaml / .env 里指向 workbuddy.ai/v2 的 WORKBUDDY_TOKEN）。
+    const enTok = backend === 'codebuddy-en' ? resolveEnToken(settings.codebuddyEnToken) : { token: null }
+    const authToken = enTok.token
     if (backend === 'codebuddy-en' && !authToken) {
       resolve({
         ok: false, status: 'AUTH_REQUIRED', response: '', sessionId: null, durationSeconds: null,

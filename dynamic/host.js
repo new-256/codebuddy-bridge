@@ -107,6 +107,76 @@ function resolveEndpoint(explicitBaseUrl, authDomain) {
 
 const DEFAULT_BACKEND = 'codebuddy'
 
+// ── codebuddy-en 凭据的第三条通道：DSH 自己的凭据库 ─────────────────────────────
+//
+// 国际版 token 被桌面 App 的 protector key 封装、密钥不落盘，headless CLI 读不到；
+// 但**用户往往已经在 DSH 里配好了同一个 token** —— DSH 的 provider 配置里有一个
+// 指向 https://www.workbuddy.ai/v2 的 workbuddy provider（apiKeyEnv: WORKBUDDY_TOKEN），
+// 其值就存在 dsh-home 的 .credentials.yaml / .env 里。
+//
+// 实测（真机）：把该 token 经 CODEBUDDY_AUTH_TOKEN 下发给 WorkBuddyAI 自带 CLI，
+// 无 BASE_URL 即返回 PONG —— 所以「自动复用 DSH 已配好的 workbuddy token」能让
+// codebuddy-en 开箱即用，用户无需手工粘贴。
+//
+// 优先级：设置面板 codebuddyEnToken > 环境变量 CODEBUDDY_AUTH_TOKEN > DSH 凭据库。
+// 读取失败一律 null（退回「让用户填」的提示路径），不抛错。
+const CREDENTIAL_KEYS = ['WORKBUDDY_TOKEN', 'WORKBUDDY_AI_TOKEN', 'CODEBUDDY_EN_TOKEN']
+
+/** 取 dsh-home 根（与 MCP/动态形态的设置文件同源逻辑，此处只用于读凭据）。 */
+function dshHomeDir() {
+  const proc = globalThis.process
+  if (!proc || !proc.env) return null
+  return proc.env.DSH_HOME || null
+}
+
+/**
+ * 从 dsh-home 的 .credentials.yaml / .env 里取一个可用的 workbuddy token。
+ * 只做最小解析（不引 YAML 依赖）：按行匹配 `KEY:` 或 `KEY=`，去掉引号。
+ * CODEBUDDY_CREDENTIALS_DIR 可覆盖（测试夹具目录，使用例与真机凭据解耦）。
+ * @returns {string|null}
+ */
+function readDshWorkbuddyToken() {
+  const proc = globalThis.process
+  const overrideDir = proc && proc.env ? proc.env.CODEBUDDY_CREDENTIALS_DIR : null
+  const home = overrideDir || dshHomeDir()
+  if (!home) return null
+  let nodeFs = null
+  try {
+    nodeFs = (proc && typeof proc.getBuiltinModule === 'function') ? proc.getBuiltinModule('node:fs') : null
+  } catch (e) { nodeFs = null }
+  if (!nodeFs) return null
+  const files = [home + '\\.credentials.yaml', home + '\\.env']
+  for (const f of files) {
+    let text = ''
+    try { text = nodeFs.readFileSync(f, 'utf8') } catch (e) { continue }
+    for (const key of CREDENTIAL_KEYS) {
+      // 匹配 `KEY:` / `KEY =` / `KEY=`，值到行尾（去掉引号与注释）
+      const m = text.match(new RegExp('^[ \\t]*' + key + '[ \\t]*[:=][ \\t]*(.+)$', 'm'))
+      if (!m) continue
+      const v = m[1].trim().replace(/\s+#.*$/, '').replace(/^['"]|['"]$/g, '').trim()
+      // 只接受看起来是真实 token 的值（避免把 $VAR 引用或占位符当凭据）
+      if (v.length >= 40 && !v.startsWith('$') && !/^<.*>$/.test(v)) return v
+    }
+  }
+  return null
+}
+
+/**
+ * 解析 codebuddy-en 的最终凭据。
+ * @param {string} [settingToken] 设置面板 codebuddyEnToken
+ * @returns {{token:string|null, source:'setting'|'env'|'dsh-store'|null}}
+ */
+function resolveEnToken(settingToken) {
+  const s = String(settingToken || '').trim()
+  if (s) return { token: s, source: 'setting' }
+  const proc = globalThis.process
+  const envTok = (proc && proc.env && proc.env.CODEBUDDY_AUTH_TOKEN) || ''
+  if (String(envTok).trim()) return { token: String(envTok).trim(), source: 'env' }
+  const fromStore = readDshWorkbuddyToken()
+  if (fromStore) return { token: fromStore, source: 'dsh-store' }
+  return { token: null, source: null }
+}
+
 /** 是否为已注册后端名。 */
 function isBackend(v) {
   return BACKENDS.indexOf(v) >= 0
@@ -167,7 +237,7 @@ function endpointEnv(backend, explicitBaseUrl, authDomain, authToken) {
  */
 function endpointMismatchHint(backend, authDomain, hasToken) {
   if (backend === 'codebuddy-en' && !hasToken) {
-    return 'codebuddy-en（WorkBuddy AI 国际版）的登录凭据被桌面 App 的 protector key 封装，该密钥不落盘、headless CLI 无法自行读取（CLI 自身报 category:"missing-key"）。请把国际版 token 填入插件设置 codebuddyEnToken（或设 CODEBUDDY_AUTH_TOKEN 环境变量）；也可直接用 backend="workbuddy"（国内版桌面 CLI，免配置）。'
+    return 'codebuddy-en（WorkBuddy AI 国际版）没有可用凭据。国际版的登录 token 被桌面 App 的 protector key 封装，该密钥不落盘、headless CLI 无法自行读取（CLI 自身报 category:"missing-key"）。桥接会依次尝试：插件设置 codebuddyEnToken → 环境变量 CODEBUDDY_AUTH_TOKEN → DSH 凭据库（.credentials.yaml / .env 里的 WORKBUDDY_TOKEN）——三者皆空。请在 DSH 里配好 workbuddy provider 的 key，或把国际版 token 填入插件设置；也可直接用 backend="workbuddy"（国内版桌面 CLI，免配置）。'
   }
   const d = String(authDomain || '').trim().toLowerCase()
   if (d && endpointHost(resolveEndpoint(null, d)) !== endpointHost(BACKEND_ENDPOINTS[backend])) {
@@ -811,7 +881,13 @@ function createRunner(o) {
     // 提供的 token 时必然 401 —— 提前给出可操作提示，胜过让 CLI 报一句无从下手的
     // "Authentication required"。这是**确定性**判断，不涉及网络猜测。
     const authDomain = o.getAuthDomain ? o.getAuthDomain(backend) : null
-    const authToken = o.getAuthToken ? o.getAuthToken(backend) : null
+    // 凭据三通道解析（v1.3.1）：设置面板 > CODEBUDDY_AUTH_TOKEN 环境变量 > DSH 凭据库。
+    // 第三条是关键——用户通常已在 DSH 里配好指向 workbuddy.ai/v2 的 token，自动复用
+    // 即可让 codebuddy-en 开箱即用（真机实测该 token 下发给 WorkBuddyAI CLI 返回 PONG）。
+    const enTok = backend === 'codebuddy-en'
+      ? resolveEnToken(o.getAuthToken ? o.getAuthToken(backend) : null)
+      : { token: null, source: null }
+    const authToken = enTok.token
     const credentialHint = endpointMismatchHint(backend, authDomain, !!authToken)
     if (backend === 'codebuddy-en' && !authToken) {
       engine.begin(cwd)

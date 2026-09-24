@@ -30,13 +30,15 @@ npm CLI 的 product 端点是 `www.codebuddy.ai`，而本机登录 token 的域�
 - 宿主侧读 `%LOCALAPPDATA%\CodeBuddyExtension\Data\Public\auth\<authentication.id>.info` 的 **`auth.domain`（三个文件均为明文）**，无需解密 token 即可对齐端点；读取失败一律回退为「沿用 CLI 自身 product 端点」。
 - **仅当推导端点与后端 product 端点不同时才注入** `CODEBUDDY_BASE_URL`，避免无谓覆盖。
 
-### `codebuddy-en` 凭据通道
+### `codebuddy-en` 凭据通道（三通道 + 自动复用）
 
-国际版 token 被 protector key（keyId `9127dea1b44020a7`）封装，该密钥**只经桌面 App 的 sidecar 通道下发、不落盘**——全盘 51612 个文件扫描、全部 DPAPI blob 解包尝试均未命中，且 CLI 自身亦以 `category:"missing-key"` 失败 21 次（`at-rest-failures-v1.json`），证明这不是探针假象。故：
+国际版自己的 token 被 protector key（keyId `9127dea1b44020a7`）封装，该密钥**只经桌面 App 的 sidecar 通道下发、不落盘**——全盘 51612 个文件扫描、全部 DPAPI blob 解包尝试均未命中，且 CLI 自身亦以 `category:"missing-key"` 失败 21 次（`at-rest-failures-v1.json`），证明这不是探针假象。**但用户通常已经在 DSH 里配好了同一个 token**：DSH 的 provider 配置里有一个指向 `https://www.workbuddy.ai/v2` 的 workbuddy provider（`apiKeyEnv: WORKBUDDY_TOKEN`），其值就存在 `dsh-home` 的 `.credentials.yaml` / `.env` 里。真机实测：把该 token 经 `CODEBUDDY_AUTH_TOKEN` 下发给 WorkBuddyAI 自带 CLI，**无 BASE_URL 即返回 PONG**。故：
 
-- 新增设置项 **`codebuddyEnToken`** → 注入 `CODEBUDDY_AUTH_TOKEN`；新增 **`endpointOverride`** 取代 `codebuddyEnBaseUrl`（后者默认值错误，已移除）。
-- 缺 token 时 `codebuddy-en` 前置返回 `AUTH_REQUIRED` 并附**可操作指引**（而非让 CLI 报一句无从下手的 `Authentication required`）；`isLimited` 将该状态排除出限流类，`failureHint` 透传指引。
+- 新增 `resolveEnToken()` / `readDshWorkbuddyToken()`：凭据按 **设置面板 `codebuddyEnToken` → 环境变量 `CODEBUDDY_AUTH_TOKEN` → DSH 凭据库** 依次取用，使 `codebuddy-en` **开箱即用**（无需用户手工粘贴）。凭据库解析只接受真实 token（≥40 字符、非 `$VAR` 引用、非 `<占位符>`），文件读取失败一律回退。
+- 新增设置项 **`codebuddyEnToken`**；新增 **`endpointOverride`** 取代 `codebuddyEnBaseUrl`（后者默认值错误，已移除）。
+- 三通道皆空时 `codebuddy-en` 前置返回 `AUTH_REQUIRED` 并附**可操作指引**（列出三条通道，而非让 CLI 报一句无从下手的 `Authentication required`）；`isLimited` 将该状态排除出限流类，`failureHint` 透传指引。
 - `codebuddy-en` 的二进制改指 WorkBuddyAI 自带 CLI（`CODEBUDDY_EN_BIN` 可覆盖），不再复用 npm CLI。
+- 新增 `CODEBUDDY_CREDENTIALS_DIR` 覆盖 + `isolateHostState()` 测试助手：桥接会读 auth 库/凭据库/`DSH_HOME` 三类真机状态，不隔离则用例会随「本机是否登录、是否配过 workbuddy key」变化而不可复现。
 
 ### 测试与文档
 

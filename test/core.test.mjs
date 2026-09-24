@@ -5,13 +5,19 @@
 
 import test from 'node:test'
 import assert from 'node:assert/strict'
+import { isolateHostState } from './helpers/mockdsh.mjs'
 import {
   isLimited, clampInt, shortLabel, summarizeArgs, parseCodebuddyJson, buildResult,
   buildArgv, fallbackResult, createLineStream, createStatusEngine, renderResult, renderStatus,
   isTransientCliError, failureHint, buildMcpBridgePayload, normalizeMcpBridge, MCP_BRIDGE_FILE,
   BACKENDS, DEFAULT_BACKEND, isBackend, resolveBackend, resolveEndpoint, endpointEnv,
-  endpointMismatchHint, endpointHost, BACKEND_ENDPOINTS, AUTH_DOMAIN_ENDPOINTS, BACKEND_AUTH_IDS
+  endpointMismatchHint, endpointHost, BACKEND_ENDPOINTS, AUTH_DOMAIN_ENDPOINTS, BACKEND_AUTH_IDS,
+  resolveEnToken, readDshWorkbuddyToken
 } from '../core/codebuddy-core.mjs'
+
+// 真机状态隔离：core 会读 DSH_HOME 凭据库（codebuddy-en 的 token 回退）。
+// 必须在任何调用前执行，否则用例会命中本机真实凭据。
+isolateHostState()
 
 // ── clampInt / shortLabel / summarizeArgs ────────────────────────────────────
 
@@ -549,6 +555,84 @@ test('isLimited/failureHint：AUTH_REQUIRED 不算限流，且透传可操作指
   const res = { ok: false, status: 'AUTH_REQUIRED', stderr: 'token 缺失：请填 codebuddyEnToken' }
   assert.equal(isLimited(res), false)
   assert.match(failureHint(res), /codebuddyEnToken/)
+})
+
+// ── codebuddy-en 凭据三通道（v1.3.1）────────────────────────────────────────
+// 国际版 token 被 protector key 封装、密钥不落盘；但用户往往已在 DSH 里配好
+// 指向 workbuddy.ai/v2 的 token（.credentials.yaml 的 WORKBUDDY_TOKEN）——
+// 真机实测该 token 下发给 WorkBuddyAI CLI 可返回 PONG，故自动复用能让
+// codebuddy-en 开箱即用。优先级：设置面板 > 环境变量 > DSH 凭据库。
+
+test('resolveEnToken：优先级 设置面板 > 环境变量 > DSH 凭据库', async () => {
+  const os = await import('node:os')
+  const fsMod = await import('node:fs')
+  const pathMod = await import('node:path')
+  const dir = fsMod.mkdtempSync(pathMod.join(os.tmpdir(), 'cb-cred-'))
+  const realDir = process.env.CODEBUDDY_CREDENTIALS_DIR
+  const realEnv = process.env.CODEBUDDY_AUTH_TOKEN
+  try {
+    // 1) 设置面板优先
+    assert.deepEqual(resolveEnToken('from-setting'), { token: 'from-setting', source: 'setting' })
+
+    // 2) 环境变量次之
+    process.env.CODEBUDDY_AUTH_TOKEN = 'from-env'
+    assert.deepEqual(resolveEnToken(''), { token: 'from-env', source: 'env' })
+    delete process.env.CODEBUDDY_AUTH_TOKEN
+
+    // 3) DSH 凭据库兜底（.credentials.yaml）
+    const tok = 'e'.repeat(120)
+    fsMod.writeFileSync(pathMod.join(dir, '.credentials.yaml'),
+      'version: 1\nrefs:\n  WORKBUDDY_TOKEN: ' + tok + '\n', 'utf8')
+    process.env.CODEBUDDY_CREDENTIALS_DIR = dir
+    assert.deepEqual(resolveEnToken(''), { token: tok, source: 'dsh-store' })
+
+    // 4) 三通道皆空 → null（走「让用户填」的提示路径）
+    fsMod.writeFileSync(pathMod.join(dir, '.credentials.yaml'), 'version: 1\nrefs:\n', 'utf8')
+    assert.deepEqual(resolveEnToken(''), { token: null, source: null })
+  } finally {
+    if (realDir === undefined) delete process.env.CODEBUDDY_CREDENTIALS_DIR; else process.env.CODEBUDDY_CREDENTIALS_DIR = realDir
+    if (realEnv === undefined) delete process.env.CODEBUDDY_AUTH_TOKEN; else process.env.CODEBUDDY_AUTH_TOKEN = realEnv
+    fsMod.rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('readDshWorkbuddyToken：只接受真实 token，跳过 $VAR 引用/占位符/过短值', async () => {
+  const os = await import('node:os')
+  const fsMod = await import('node:fs')
+  const pathMod = await import('node:path')
+  const dir = fsMod.mkdtempSync(pathMod.join(os.tmpdir(), 'cb-cred2-'))
+  const realDir = process.env.CODEBUDDY_CREDENTIALS_DIR
+  try {
+    process.env.CODEBUDDY_CREDENTIALS_DIR = dir
+    const f = pathMod.join(dir, '.credentials.yaml')
+    // $VAR 引用不应被当作凭据
+    fsMod.writeFileSync(f, '  WORKBUDDY_TOKEN: $SOME_VAR\n', 'utf8')
+    assert.equal(readDshWorkbuddyToken(), null)
+    // 占位符不应被当作凭据
+    fsMod.writeFileSync(f, '  WORKBUDDY_TOKEN: <your-token-here>\n', 'utf8')
+    assert.equal(readDshWorkbuddyToken(), null)
+    // 过短值不应被当作凭据
+    fsMod.writeFileSync(f, '  WORKBUDDY_TOKEN: short\n', 'utf8')
+    assert.equal(readDshWorkbuddyToken(), null)
+    // 真实 JWT 形态（带引号）应被取出并去引号
+    const jwt = 'eyJhbGciOi.' + 'x'.repeat(100) + '.sig'
+    fsMod.writeFileSync(f, '  WORKBUDDY_TOKEN: "' + jwt + '"\n', 'utf8')
+    assert.equal(readDshWorkbuddyToken(), jwt)
+    // .env 形态（KEY=value）
+    fsMod.writeFileSync(f, 'refs:\n', 'utf8')
+    fsMod.writeFileSync(pathMod.join(dir, '.env'), 'WORKBUDDY_TOKEN=' + jwt + '\n', 'utf8')
+    assert.equal(readDshWorkbuddyToken(), jwt)
+  } finally {
+    if (realDir === undefined) delete process.env.CODEBUDDY_CREDENTIALS_DIR; else process.env.CODEBUDDY_CREDENTIALS_DIR = realDir
+    fsMod.rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('endpointMismatchHint：缺凭据时的指引列出三条通道', () => {
+  const hint = endpointMismatchHint('codebuddy-en', 'www.workbuddy.ai', false)
+  assert.match(hint, /codebuddyEnToken/)
+  assert.match(hint, /CODEBUDDY_AUTH_TOKEN/)
+  assert.match(hint, /WORKBUDDY_TOKEN/)
 })
 
 test('buildArgv：defaultModel 只在未显式指定 model 时注入 + env 透传', () => {
