@@ -2,6 +2,16 @@
 
 本项目遵循 [语义化版本](https://semver.org/)；版本号同步 `package.json`、Git tag 与 GitHub Release（`npm run check` 中的 `scripts/verify.mjs` 在 CI 里锁三处一致）。
 
+## [1.3.3] - 2026-09-25
+
+**WorkBuddy 国际版正名 + 后端别名**：用户反馈「把 WorkBuddy 国际版（`C:\Program Files\WorkBuddyAI`）加入列表」——实测核实该目录**在 v1.3.1 就已接入**（即 `codebuddy-en` 后端：二进制指向 WorkBuddyAI 自带 CLI，登录域 `www.workbuddy.ai`），但旧标签「CodeBuddy 国际版」把它藏在了 CodeBuddy 名下，看起来像缺一个后端。本版更正可见命名并补别名，功能面零变化。
+
+### 改了什么
+
+- **显示标签**：`codebuddy-en` 的用户可见名改为「**WorkBuddy 国际版（WorkBuddyAI 桌面 CLI）**」（设置面板下拉、诊断表、preset 设置描述同源生效）。
+- **后端别名**：`backend="workbuddy-en"` / `"workbuddy-ai"` 归一为 `codebuddy-en`（新增 `normalizeBackend()` + `BACKEND_ALIASES`；大小写/首尾空白不敏感）。三条优先级通道（显式参数 / 会话归属 / 用户偏好 `preferredBackend`）与设置文件清洗（`normalizeBridgeSettings`）全部走归一，**规范 id 保持 `codebuddy-en` 不变** —— 历史会话按其归档，续接路由不受影响。工具 schema 的 `enum` 六处同步列出别名（宿主照单接受）。
+- **文案纠偏**：policy 文本里 v1.3.0 时代的错误说法（"using the same installed CLI binary"）改为真机事实（三个独立安装包）；模型分组不再把 `workbuddy`（国内办公面）标成 "international"，改称 "desktop-bundled"。
+
 ## [1.3.2] - 2026-09-25
 
 **可视化配置界面**：DSH 设置里新增「CodeBuddy 桥接」分区 —— 首选 CLI / 默认模型 / 端点覆盖 / 国际版凭据四项偏好在同一面板编辑保存，外加逐后端的生效配置诊断（登录域 → 端点 → 凭据来源）。保存即对 **preset / 动态插件 / MCP 三种形态**同时生效，无需重启。

@@ -48,7 +48,7 @@
 | 后端 | 安装包 | product 端点 | 登录要求 |
 |---|---|---|---|
 | `codebuddy`（默认） | npm `@tencent-ai/codebuddy-code` | `www.codebuddy.ai` | 已登录即用（端点按登录域自动对齐） |
-| `codebuddy-en` | WorkBuddy AI 桌面版（`C:\Program Files\WorkBuddyAI`） | `www.workbuddy.ai` | **凭据自动复用**：设置面板 `codebuddyEnToken` → 环境变量 `CODEBUDDY_AUTH_TOKEN` → DSH 凭据库（`.credentials.yaml`/`.env` 的 `WORKBUDDY_TOKEN`）；三条通道皆空才 `AUTH_REQUIRED` |
+| `codebuddy-en`（v1.3.3 显示名「WorkBuddy 国际版（WorkBuddyAI 桌面 CLI）」；别名 `workbuddy-en` / `workbuddy-ai` 归一到该规范 id） | WorkBuddy 国际版（WorkBuddyAI）桌面版（`C:\Program Files\WorkBuddyAI`） | `www.workbuddy.ai` | **凭据自动复用**：设置面板 `codebuddyEnToken` → 环境变量 `CODEBUDDY_AUTH_TOKEN` → DSH 凭据库（`.credentials.yaml`/`.env` 的 `WORKBUDDY_TOKEN`）；三条通道皆空才 `AUTH_REQUIRED` |
 | `workbuddy` | WorkBuddy 桌面版（`C:\Program Files\WorkBuddy`） | `copilot.tencent.com` | 已登录即用（端点按登录域自动对齐） |
 
 设置键（v1.3.1）：`preferredBackend` / `defaultModel` / `codebuddyEnToken` / `endpointOverride`

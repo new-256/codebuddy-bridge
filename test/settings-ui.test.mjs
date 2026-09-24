@@ -60,6 +60,9 @@ test('core: 原子写不留 .tmp 残file；损坏 JSON → null；垃圾值清�
   assert.equal(core.readBridgeSettingsFile(), null, '损坏文件 = 视同缺失')
   const cleaned = core.normalizeBridgeSettings({ preferredBackend: 'bogus', defaultModel: '  spaced  ', endpointOverride: 42 })
   assert.equal(cleaned.preferredBackend, 'codebuddy', '未知后端回落默认')
+  // v1.3.3 别名清洗：workbuddy-en / workbuddy-ai → 规范 id codebuddy-en 落盘
+  assert.equal(core.normalizeBridgeSettings({ preferredBackend: 'workbuddy-en' }).preferredBackend, 'codebuddy-en')
+  assert.equal(core.sanitizeBridgeSettings({ preferredBackend: 'WorkBuddy-AI' }).preferredBackend, 'codebuddy-en')
   assert.equal(cleaned.defaultModel, 'spaced', 'trim')
   assert.equal(cleaned.endpointOverride, '', '非字符串丢弃')
   // sanitize 只挑四个已知字段

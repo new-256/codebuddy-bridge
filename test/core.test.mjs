@@ -10,8 +10,9 @@ import {
   isLimited, clampInt, shortLabel, summarizeArgs, parseCodebuddyJson, buildResult,
   buildArgv, fallbackResult, createLineStream, createStatusEngine, renderResult, renderStatus,
   isTransientCliError, failureHint, buildMcpBridgePayload, normalizeMcpBridge, MCP_BRIDGE_FILE,
-  BACKENDS, DEFAULT_BACKEND, isBackend, resolveBackend, resolveEndpoint, endpointEnv,
+  BACKENDS, DEFAULT_BACKEND, isBackend, normalizeBackend, resolveBackend, resolveEndpoint, endpointEnv,
   endpointMismatchHint, endpointHost, BACKEND_ENDPOINTS, AUTH_DOMAIN_ENDPOINTS, BACKEND_AUTH_IDS,
+  BACKEND_LABELS, BACKEND_ALIASES,
   resolveEnToken, readDshWorkbuddyToken
 } from '../core/codebuddy-core.mjs'
 
@@ -497,6 +498,39 @@ test('resolveBackend：显式 > 会话归属 > 用户偏好 > 默认', () => {
   assert.equal(resolveBackend({}, { backend: null }, 'codebuddy-en'), 'codebuddy-en')
   assert.equal(resolveBackend({}, { backend: null }, 'bogus'), 'codebuddy')
   assert.equal(resolveBackend({}, {}, null), 'codebuddy')
+})
+
+// ── v1.3.3：WorkBuddy 国际版正名 + 后端别名 ──────────────────────────────────
+
+test('normalizeBackend：workbuddy-en / workbuddy-ai 别名归一到 codebuddy-en；大小写不敏感', () => {
+  assert.equal(normalizeBackend('workbuddy-en'), 'codebuddy-en')
+  assert.equal(normalizeBackend('workbuddy-ai'), 'codebuddy-en')
+  assert.equal(normalizeBackend('WorkBuddy-EN'), 'codebuddy-en')
+  assert.equal(normalizeBackend('  codebuddy-en  '), 'codebuddy-en')
+  assert.equal(normalizeBackend('CodeBuddy'), 'codebuddy')
+  // 非后端名原样返回（由调用方 isBackend 兜底）；非字符串透传
+  assert.equal(normalizeBackend('bogus'), 'bogus')
+  assert.equal(normalizeBackend(undefined), undefined)
+  assert.equal(normalizeBackend(null), null)
+  // 别名表本身不与规范 id 冲突
+  for (const b of BACKENDS) assert.equal(BACKEND_ALIASES[b], undefined)
+})
+
+test('resolveBackend 接受别名（三处优先级通道都归一）', () => {
+  // 显式参数走别名
+  assert.equal(resolveBackend({ backend: 'workbuddy-en' }, {}, null), 'codebuddy-en')
+  // 会话归属走别名
+  assert.equal(resolveBackend({}, { backend: 'workbuddy-ai' }, null), 'codebuddy-en')
+  // 用户偏好走别名
+  assert.equal(resolveBackend({}, {}, 'workbuddy-en'), 'codebuddy-en')
+  // 别名 + 非法值混杂：非法仍被忽略
+  assert.equal(resolveBackend({ backend: 'bogus' }, { backend: 'workbuddy-en' }, null), 'codebuddy-en')
+})
+
+test('BACKEND_LABELS 正名：国际面以 WorkBuddy 国际版（WorkBuddyAI）示人（v1.3.3）', () => {
+  assert.match(BACKEND_LABELS['codebuddy-en'], /WorkBuddy 国际版/)
+  assert.match(BACKEND_LABELS['codebuddy-en'], /WorkBuddyAI/)
+  assert.ok(!/CodeBuddy 国际版/.test(BACKEND_LABELS['codebuddy-en']), '旧误导标签不得回潮')
 })
 
 test('resolveEndpoint：显式覆盖优先；否则按登录域推导；未知域返回 null', () => {

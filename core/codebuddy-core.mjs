@@ -108,11 +108,17 @@ export const BACKEND_MODEL_IDS = {
 }
 
 // 各后端的用户可见名（面板下拉标签；产品面与登录域互斥，故按面分列）。
+// v1.3.3 正名：国际面安装目录就叫 WorkBuddyAI（`C:\Program Files\WorkBuddyAI`），
+// 旧标签「CodeBuddy 国际版」让人误以为 WorkBuddy 国际版另有一个后端。规范 id
+// 保持 codebuddy-en（历史会话按其归档，不可改），别名见 BACKEND_ALIASES。
 export const BACKEND_LABELS = {
   'codebuddy': 'CodeBuddy 国内版（npm CLI）',
-  'codebuddy-en': 'CodeBuddy 国际版（WorkBuddy AI）',
+  'codebuddy-en': 'WorkBuddy 国际版（WorkBuddyAI 桌面 CLI）',
   'workbuddy': 'WorkBuddy 国内版（桌面 CLI）'
 }
+
+// 后端参数别名（v1.3.3）：workbuddy-en / workbuddy-ai 规范化到 codebuddy-en。
+export const BACKEND_ALIASES = { 'workbuddy-en': 'codebuddy-en', 'workbuddy-ai': 'codebuddy-en' }
 
 // ── codebuddy-en 凭据的第三条通道：DSH 自己的凭据库 ─────────────────────────────
 //
@@ -189,6 +195,18 @@ export function isBackend(v) {
   return BACKENDS.indexOf(v) >= 0
 }
 
+/**
+ * 后端名规范化（v1.3.3）：接受别名 workbuddy-en / workbuddy-ai → codebuddy-en
+ * （WorkBuddy 国际版就是 WorkBuddyAI 桌面自带 CLI，规范 id 不动以保证历史会话
+ * 归档路由）；大小写不敏感；非后端名原样返回（由调用方的 isBackend 兜底）。
+ */
+export function normalizeBackend(v) {
+  if (typeof v !== 'string') return v
+  const lower = v.trim().toLowerCase()
+  const aliased = BACKEND_ALIASES[lower] || lower
+  return BACKENDS.indexOf(aliased) >= 0 ? aliased : v
+}
+
 // ── 桥接设置文件（v1.3.2 可视化配置界面的持久层）─────────────────────────────
 // 单一事实来源：<dsh-home>/codebuddy-bridge-settings.json
 //   { "preferredBackend": "...", "defaultModel": "...",
@@ -242,7 +260,11 @@ export function readBridgeSettingsFile(io) {
 export function normalizeBridgeSettings(raw) {
   const snap = { preferredBackend: DEFAULT_BACKEND, defaultModel: '', codebuddyEnToken: '', endpointOverride: '' }
   if (!raw || typeof raw !== 'object') return snap
-  if (typeof raw.preferredBackend === 'string' && BACKENDS.indexOf(raw.preferredBackend) >= 0) snap.preferredBackend = raw.preferredBackend
+  if (typeof raw.preferredBackend === 'string') {
+    // 别名清洗（v1.3.3）：workbuddy-en → codebuddy-en
+    const nb = normalizeBackend(raw.preferredBackend)
+    if (typeof nb === 'string' && BACKENDS.indexOf(nb) >= 0) snap.preferredBackend = nb
+  }
   if (typeof raw.defaultModel === 'string') snap.defaultModel = raw.defaultModel.trim()
   if (typeof raw.codebuddyEnToken === 'string') snap.codebuddyEnToken = raw.codebuddyEnToken.trim()
   if (typeof raw.endpointOverride === 'string') snap.endpointOverride = raw.endpointOverride.trim()
@@ -395,9 +417,9 @@ export function writeBridgeSettingsFile(value, io) {
  * @param {string} [preferredBackend] 设置面板里的用户偏好（默认 CLI）
  */
 export function resolveBackend(args, target, preferredBackend) {
-  if (args && isBackend(args.backend)) return args.backend
-  if (target && target.backend && isBackend(target.backend)) return target.backend
-  if (preferredBackend && isBackend(preferredBackend)) return preferredBackend
+  if (args && isBackend(normalizeBackend(args.backend))) return normalizeBackend(args.backend)
+  if (target && target.backend && isBackend(normalizeBackend(target.backend))) return normalizeBackend(target.backend)
+  if (preferredBackend && isBackend(normalizeBackend(preferredBackend))) return normalizeBackend(preferredBackend)
   return DEFAULT_BACKEND
 }
 
@@ -960,9 +982,9 @@ export const POLICY_TEXT = [
   '',
   'Fallback protocol: when codebuddy is rate-limited or the network is down, codebuddy_run/codebuddy_continue automatically pop a confirmation dialog asking the user whether to use the DSH local API config. If the returned result has fallback=true (status FALLBACK_TO_DSH), the user chose to fall back: complete the task with native DSH tools / the local model and DO NOT call codebuddy again for this task. If ok=false without fallback, report the codebuddy error. Never loop codebuddy calls; never ask codebuddy to call back into DSH.',
   '',
-  'Model selection: codebuddy_run takes an optional model. When unspecified, the CLI default applies unless the user set a preferred default model in the plugin settings (then that is injected automatically per call). Supported models differ per backend: "codebuddy" (domestic): hy4-preview, hy3, hy3-x, glm-5.3, glm-5.3-flash, glm-5.2, glm-5.1, glm-5v-turbo, minimax-m3, minimax-m2.7, kimi-k3-1, kimi-k2.7, kimi-k2.6, deepseek-v4-pro, deepseek-v4-flash; "codebuddy-en"/"workbuddy" (international): auto, glm-5v-turbo, glm-5.1, glm-5.0-turbo, glm-5.0, glm-4.7, kimi-k2.5, minimax-m2.7, deepseek-v3-2-volc. Pass a model only when the task clearly benefits from a specific one; the default is usually right. Optional effort: minimal/low/medium/high/xhigh/max. Optional maxTurns caps agentic turns (default unlimited).',
+  'Model selection: codebuddy_run takes an optional model. When unspecified, the CLI default applies unless the user set a preferred default model in the plugin settings (then that is injected automatically per call). Supported models differ per backend: "codebuddy" (domestic npm CLI): hy4-preview, hy3, hy3-x, glm-5.3, glm-5.3-flash, glm-5.2, glm-5.1, glm-5v-turbo, minimax-m3, minimax-m2.7, kimi-k3-1, kimi-k2.7, kimi-k2.6, deepseek-v4-pro, deepseek-v4-flash; "codebuddy-en" and "workbuddy" (desktop-bundled CLIs, shared list): auto, glm-5v-turbo, glm-5.1, glm-5.0-turbo, glm-5.0, glm-4.7, kimi-k2.5, minimax-m2.7, deepseek-v3-2-volc. Pass a model only when the task clearly benefits from a specific one; the default is usually right. Optional effort: minimal/low/medium/high/xhigh/max. Optional maxTurns caps agentic turns (default unlimited).',
   '',
-  'Backends: codebuddy_run/codebuddy_continue take an optional backend parameter choosing which CLI face of the same engine (Tencent CodeBuddy Code) runs the task. "codebuddy" is the domestic CodeBuddy (copilot.tencent.com) — default for coding work. "codebuddy-en" is the international CodeBuddy (workbuddy.ai endpoint; the bridge injects the international endpoint env automatically, using the same installed CLI binary). "workbuddy" is the CLI bundled with the WorkBuddy desktop app — same international product face, and the office-scenario sibling: documents, slides, spreadsheets, knowledge-base lookups, image/video generation, WeChat/WeCom replies. When the user asks for office/document/IM work, dispatch with backend="workbuddy"; for international accounts prefer "codebuddy-en" (or "workbuddy" when installed). Sessions are kept per backend (login domains are exclusive), and continuing a session automatically routes back to the backend that owns it (explicit backend wins). A user-preferred default backend (plugin settings) applies when a call is new (no session) and no explicit backend is given.'
+  'Backends: codebuddy_run/codebuddy_continue take an optional backend parameter choosing which CLI face of the same engine (Tencent CodeBuddy Code) runs the task. "codebuddy" is the domestic CodeBuddy (npm CLI @tencent-ai/codebuddy-code, product endpoint www.codebuddy.ai) — default for coding work. "codebuddy-en" is the WorkBuddy INTERNATIONAL edition — the CLI bundled with the WorkBuddyAI desktop app (C:\\Program Files\\WorkBuddyAI, product endpoint www.workbuddy.ai); the aliases "workbuddy-en" and "workbuddy-ai" are also accepted and normalized to codebuddy-en. "workbuddy" is the CLI bundled with the domestic WorkBuddy desktop app (product endpoint copilot.tencent.com, zero config) — the office-scenario face: documents, slides, spreadsheets, knowledge-base lookups, image/video generation, WeChat/WeCom replies. When the user asks for office/document/IM work, dispatch with backend="workbuddy"; for international accounts use "codebuddy-en" (a.k.a. WorkBuddy 国际版 / WorkBuddyAI). Sessions are kept per backend (login domains are exclusive), and continuing a session automatically routes back to the backend that owns it (explicit backend wins). A user-preferred default backend (plugin settings) applies when a call is new (no session) and no explicit backend is given.'
 ].join('\n')
 
 // ── 执行编排（preset 与 dynamic 共用；MCP 的 stdio 编排见其适配层）──────────
@@ -1073,7 +1095,7 @@ export function createRunner(o) {
     const args = rawArgs || {}
     built_env = null
     if (!args.prompt || !String(args.prompt).trim()) {
-      return { ok: false, status: 'BAD_ARGS', response: '', sessionId: null, durationSeconds: null, numTurns: null, totalTokens: null, exitCode: null, mode: 'auto', backend: args.backend || null, stderr: 'prompt is required' }
+      return { ok: false, status: 'BAD_ARGS', response: '', sessionId: null, durationSeconds: null, numTurns: null, totalTokens: null, exitCode: null, mode: 'auto', backend: normalizeBackend(args.backend) || null, stderr: 'prompt is required' }
     }
     // 后端路由（v1.3.0：三后端 + 用户偏好默认）：显式 args.backend 最优先；否则按
     // 会话归属（各后端登录域互斥，同一 sessionId 只在一个后端有效），都没有则用
