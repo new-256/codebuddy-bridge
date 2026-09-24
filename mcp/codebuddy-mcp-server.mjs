@@ -41,7 +41,7 @@ import {
 } from '../core/codebuddy-core.mjs'
 
 const NAME = 'codebuddy-mcp-server'
-const VERSION = '1.4.0'
+const VERSION = '1.4.1'
 const PROTOCOL = '2024-11-05'
 
 // Default cwd for codebuddy calls that do not pass one (override: CODEBUDDY_MCP_CWD).
@@ -390,7 +390,7 @@ const TOOLS = [
         prompt: { type: 'string', description: 'The full task/instruction for codebuddy. Be complete and self-contained.' },
         backend: { type: 'string', enum: ['codebuddy', 'codebuddy-intl', 'codebuddy-ioa', 'codebuddy-international', 'codebuddy-en', 'workbuddy-en', 'workbuddy-ai', 'workbuddy'], description: 'codebuddy (default) for coding work (domestic CodeBuddy npm CLI); codebuddy-intl = the INTERNATIONAL face of that same npm CLI (product.ioa.json catalogue: claude-sonnet-5 / claude-opus-5 / gemini-3.1-pro / gpt-6-astra / hy3-ioa; aliases codebuddy-ioa / codebuddy-international) — use it for international CodeBuddy accounts; codebuddy-en = WorkBuddy international edition (the WorkBuddyAI desktop CLI at C:\\Program Files\\WorkBuddyAI; aliases workbuddy-en / workbuddy-ai accepted; needs codebuddyEnToken in the settings file unless DSH already holds a workbuddy key — its login token is sealed by a protector key the headless CLI cannot read); workbuddy for the WorkBuddy domestic desktop CLI, also the office-scenario face (docs/slides, knowledge base, media generation, WeChat/WeCom replies). New calls without a backend follow the user-preferred default backend (settings file). Continuing a session routes back to its owning backend automatically.' },
         mode: { type: 'string', enum: ['plan', 'accept-edits'], description: 'plan = no writes; accept-edits = allow edits (default).' },
-        model: { type: 'string', description: 'Optional model id. Unset = user-preferred default model (settings file) if set, else the CLI configured default. Lists differ per backend — domestic (codebuddy): hy4-preview, hy3, hy3-x, glm-5.3, glm-5.3-flash, glm-5.2, glm-5.1, glm-5v-turbo, minimax-m3, minimax-m2.7, kimi-k3-1, kimi-k2.7, kimi-k2.6, deepseek-v4-pro, deepseek-v4-flash; desktop-bundled (codebuddy-en = WorkBuddy international, workbuddy = WorkBuddy domestic): auto, glm-5v-turbo, glm-5.1, glm-5.0-turbo, glm-5.0, glm-4.7, kimi-k2.5, minimax-m2.7, deepseek-v3-2-volc.' },
+        model: { type: 'string', description: 'Optional model id. Unset = user-preferred default model (settings file) if set, else the CLI configured default. Availability is ACCOUNT-driven, not install- or face-driven: the same npm CLI and the domestic WorkBuddy desktop CLI share one account catalogue. Measured for this account on this machine: hy4-preview, hy3, hy3-x, deepseek-v4.1-flash, glm-5.3, glm-5.3-flash, glm-5.2, glm-5.1, glm-5v-turbo, minimax-m3, kimi-k3-1, kimi-k2.8-preview, kimi-k2.7, kimi-k2.6, deepseek-v4-pro (workbuddy additionally accepts auto). International ids (claude-sonnet-5, gemini-3.1-pro, ...) are gated per account.' },
         effort: { type: 'string', enum: ['minimal', 'low', 'medium', 'high', 'xhigh', 'max'], description: 'Optional reasoning effort.' },
         maxTurns: { type: 'integer', description: 'Optional max agentic turns (1-500, default unlimited).' },
         cwd: { type: 'string', description: 'Working directory for codebuddy (default: CODEBUDDY_MCP_CWD or the fallback workspace). If the server sets CODEBUDDY_MCP_ALLOWED_ROOTS, this must be inside the whitelist.' },
@@ -411,7 +411,7 @@ const TOOLS = [
         latest: { type: 'boolean', description: 'Continue the most recent codebuddy conversation.' },
         backend: { type: 'string', enum: ['codebuddy', 'codebuddy-intl', 'codebuddy-ioa', 'codebuddy-international', 'codebuddy-en', 'workbuddy-en', 'workbuddy-ai', 'workbuddy'], description: 'Which CLI face to resume on (codebuddy-en = WorkBuddy international, aliases workbuddy-en / workbuddy-ai accepted); defaults to the backend owning the sessionId, then the user-preferred default backend (settings file).' },
         mode: { type: 'string', enum: ['plan', 'accept-edits'], description: 'plan = no writes; accept-edits = allow edits (default).' },
-        model: { type: 'string', description: 'Optional model id (lists differ per backend — see codebuddy_run).' },
+        model: { type: 'string', description: 'Optional model id (availability is account-driven, not per-backend — see codebuddy_run).' },
         effort: { type: 'string', enum: ['minimal', 'low', 'medium', 'high', 'xhigh', 'max'] },
         maxTurns: { type: 'integer', description: 'Optional max agentic turns (1-500).' },
         cwd: { type: 'string', description: "Working directory for codebuddy; when resuming, defaults to the resumed session's project directory." },

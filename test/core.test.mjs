@@ -13,7 +13,7 @@ import {
   BACKENDS, DEFAULT_BACKEND, isBackend, normalizeBackend, resolveBackend, resolveEndpoint, endpointEnv,
   endpointMismatchHint, endpointHost, BACKEND_ENDPOINTS, AUTH_DOMAIN_ENDPOINTS, BACKEND_AUTH_IDS,
   BACKEND_LABELS, BACKEND_ALIASES,
-  extractModelIds, readBackendModelCatalog,
+  extractModelIds, readBackendModelCatalog, backendModelCatalog, parseAccountModels, BACKEND_MODEL_IDS,
   resolveEnToken, readDshWorkbuddyToken
 } from '../core/codebuddy-core.mjs'
 
@@ -569,16 +569,55 @@ test('extractModelIds：优先取更完整的那份（agents.cli vs 顶层 model
   assert.equal(extractModelIds({}), null)
 })
 
-test('readBackendModelCatalog：读得到就用文件内容，读不到回退静态表（不抛错）', () => {
-  const fake = { readFileSync: () => JSON.stringify({ models: [{ id: 'from-file-1' }, { id: 'from-file-2' }] }) }
-  assert.deepEqual(readBackendModelCatalog('codebuddy', fake), ['from-file-1', 'from-file-2'])
-  // 抛错 → 回退静态表（真机实测值），且非空
+test('backendModelCatalog：静态账号实测表为主，product 文件只做并集补充（v1.4.1 修正）', () => {
+  // 文件里多出来的 id 追加在后（静态表在前）
+  const fake = { readFileSync: () => JSON.stringify({ models: [{ id: 'glm-5.2' }, { id: 'brand-new-from-file' }] }) }
+  const ids = backendModelCatalog('codebuddy', fake)
+  assert.equal(ids[0], 'hy4-preview', '静态表在前（账号实测过的优先）')
+  assert.ok(ids.includes('brand-new-from-file'), '文件里额外的 id 应被并入')
+  assert.equal(ids.filter((x) => x === 'glm-5.2').length, 1, '并集需去重')
+  // 读不到文件 → 纯静态表，非空
   const boom = { readFileSync: () => { throw new Error('nope') } }
-  const fb = readBackendModelCatalog('codebuddy', boom)
-  assert.ok(fb.length > 0)
-  assert.ok(fb.includes('glm-5.2'))
+  const fb = backendModelCatalog('codebuddy', boom)
+  assert.deepEqual(fb, BACKEND_MODEL_IDS['codebuddy'])
+  assert.ok(fb.includes('hy4-preview'))
   // 未知后端 → 空数组而不是抛错
-  assert.deepEqual(readBackendModelCatalog('bogus', boom), [])
+  assert.deepEqual(backendModelCatalog('bogus', boom), [])
+  // 旧名仍可用（v1.4.0 引入时的函数名）
+  assert.deepEqual(readBackendModelCatalog('codebuddy', boom), fb)
+})
+
+test('parseAccountModels：解析服务端「该账号当前支持的模型」清单（权威来源）', () => {
+  const real = [
+    '400 model [__probe__] service info not found (01a0d498/01a0d498)',
+    'Currently supported models for your account:',
+    '  - hy4-preview',
+    '  - hy3',
+    '  - glm-5.3',
+    '',
+    'Please use --model <model_id> to specify a valid model.'
+  ].join('\n')
+  assert.deepEqual(parseAccountModels(real), ['hy4-preview', 'hy3', 'glm-5.3'])
+  // 去重
+  assert.deepEqual(parseAccountModels('Currently supported models for your account:\n- a\n- a\n- b\n'), ['a', 'b'])
+  // 无该段 → null（例如 Authentication required 的报错）
+  assert.equal(parseAccountModels('Authentication required. Please use /login command to sign in'), null)
+  assert.equal(parseAccountModels(''), null)
+  assert.equal(parseAccountModels(null), null)
+})
+
+test('静态模型表：不含该账号实测不存在的发行版候选 id（v1.4.0 的错）', () => {
+  // 这些是 product.json 的发行版候选，真机实测均报 service info not found
+  const bogus = ['default-model', 'primary-model', 'gpt-6-astra', 'gpt-5.6-sol']
+  for (const b of ['codebuddy', 'workbuddy']) {
+    for (const x of bogus) {
+      assert.ok(!BACKEND_MODEL_IDS[b].includes(x), `${b} 不应含不存在的 ${x}`)
+    }
+  }
+  // codebuddy 与 workbuddy 共享同一账号清单，workbuddy 多一个 auto
+  assert.ok(BACKEND_MODEL_IDS['workbuddy'].includes('auto'))
+  assert.ok(BACKEND_MODEL_IDS['codebuddy'].includes('hy4-preview'))
+  assert.ok(BACKEND_MODEL_IDS['workbuddy'].includes('hy4-preview'))
 })
 
 test('codebuddy-intl 诊断：账号未授权时给出可操作提示（真机 400 文案）', () => {

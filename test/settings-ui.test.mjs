@@ -99,12 +99,12 @@ test('core: backendSettingsMeta / diagnoseBackend（诊断视图纯函数）', (
   const io = { readFileSync: () => { throw new Error('fixture: no product.json') } }
   const metas = core.allBackendSettingsMeta(io)
   assert.deepEqual(metas.map((m) => m.id), ['codebuddy', 'codebuddy-intl', 'codebuddy-en', 'workbuddy'])
-  // 夹具读不到 product 描述文件 → 回退静态表（回退表即真机实测值）
-  assert.ok(metas[0].models.includes('glm-5.2'), 'codebuddy 回退表含真机型号')
-  assert.ok(metas[1].models.includes('claude-sonnet-5'), 'codebuddy-intl 回退表含国际面型号')
+  // 夹具读不到 product 描述文件 → 用静态表（= 真机按账号实测的可用清单）
+  assert.ok(metas[0].models.includes('hy4-preview'), 'codebuddy 静态表含账号实测型号')
+  assert.ok(metas[1].models.includes('claude-sonnet-5'), 'codebuddy-intl 含国际面型号')
   assert.equal(metas[2].needsToken, true)
   assert.equal(metas[0].needsToken, false)
-  assert.ok(metas[3].models.includes('deepseek-v3-2-volc'), 'workbuddy 回退表')
+  assert.ok(metas[3].models.includes('auto'), 'workbuddy 静态表含 auto')
   const diag = core.diagnoseBackend('codebuddy', core.defaultBridgeSettings(), { env: {} })
   // 测试夹具登录域 www.codebuddy.cn（mockdsh fixtures/auth）→ 端点应为 cn 域而非 product
   assert.equal(diag.endpointSource, 'auth-domain')

@@ -2,6 +2,37 @@
 
 本项目遵循 [语义化版本](https://semver.org/)；版本号同步 `package.json`、Git tag 与 GitHub Release（`npm run check` 中的 `scripts/verify.mjs` 在 CI 里锁三处一致）。
 
+## [1.4.1] - 2026-09-25
+
+**模型清单的权威来源找对了：按账号，不按安装**。用户指出「分清楚 codebuddy 与 workbuddy 的模型，暂时看来可能有误」——**确实有误，且 v1.4.0 的整个思路就是错的**。
+
+### v1.4.0 错在哪
+
+v1.4.0 认为「各安装的 `product.json` 是权威清单」，于是照它硬编码。真机把那些 id **逐个喂给 CLI 实测**后发现大量根本不存在：
+
+```
+--model default-model   →  400 model [default-model] service info not found
+--model primary-model   →  400 model [primary-model] service info not found
+--model gpt-6-astra     →  400 model [gpt-6-astra] service info not found
+```
+
+`product.json` 里的 `agents.cli.models` 是**发行版内置的候选表**，不等于**该账号实际可用**的模型。另外 `--help` 的静态表（`glm-5.2, kimi-k2.6, …`）对**三个安装完全相同**——这本身就说明差异不在安装，而在账号。
+
+还有一处读错了文件：`workbuddy` 的 rel 用的是 `product.cloudhosted.json`（其 `endpoint` 与 `authentication.id` **均为空**，只是变体碎片），而该安装真正的产品面是 `product.json`（`applicationName=WorkBuddy`、`auth.id=workbuddy-desktop`、`endpoint=copilot.tencent.com`）。已改正。
+
+### 真正的权威来源
+
+给 CLI 传一个**不存在的 model**，服务端会在 400 里回一行 `Currently supported models for your account:`，后跟逐行 `  - <id>` —— 这是**按账号实时**返回的清单。v1.4.1 新增 `parseAccountModels()` 解析它（core 保持纯函数，不联网、不 spawn）。
+
+**实测该账号（codebuddy 与 workbuddy 结果一致）**：`hy4-preview, hy3, hy3-x, deepseek-v4.1-flash, glm-5.3, glm-5.3-flash, glm-5.2, glm-5.1, glm-5v-turbo, minimax-m3, kimi-k3-1, kimi-k2.8-preview, kimi-k2.7, kimi-k2.6, deepseek-v4-pro`（`workbuddy` 另接受 `auto`；`minimax-m2.7` 实测也可用）。
+
+### 改了什么
+
+- **优先级反转**：`backendModelCatalog()` 改为**静态表（= 账号实测清单）为主**，product 文件**只做并集补充**（v1.4.0 反了，把不存在的 id 当成候选项）。静态表在前也保证下拉里最靠谱的排最前。
+- **静态表按实测重写**：`codebuddy` / `workbuddy` 用上述账号清单（`workbuddy` 多 `auto`）；`codebuddy-en` / `codebuddy-intl` 去掉 `default-model` / `primary-model` / `gpt-6-astra` 一类不存在的 id。
+- **新增 `parseAccountModels()` + 测试**：解析服务端账号清单，含去重与「`Authentication required` 时报 null」的容错。
+- 测试 132→134 例；policy 模型段重写为「可用性由账号决定，不由安装或产品面决定」，并写明两种 400 的区分（`service info not found` = 不在清单；`only available for authorized users` = 在清单但未授权）。
+
 ## [1.4.0] - 2026-09-25
 
 **模型清单改为运行时读取 + CodeBuddy 国际版独立成第五个选项**：用户反馈「四个产品面的模型获取错误，请核实路径」，并要求「把国际版 WorkBuddy 与国际版 CodeBuddy 区成两个选项」。逐安装实测后确认：旧清单确实是错的（`codebuddy-en`/`workbuddy` 两份抄的是**国内版 `product.internal.json`**，且含本机不存在的型号），且此前把两个国际面混为一谈。
@@ -9,7 +40,8 @@
 ### 改了什么
 
 - **模型清单不再硬编码**：新增 `readBackendModelCatalog()` / `extractModelIds()`，**运行时**从各安装自己的 product 描述文件现读 `agents.cli.models`（与顶层 `models` 取更完整的那份——真机实测 WorkBuddyAI 的 `agents.cli.models` 只有 4 个**角色别名**，37 个真实 id 在顶层 `models`）。读不到时回退内置静态表（即本次真机实测值），**永不抛错、永不为空**。
-  - `codebuddy`（npm `product.json`）→ 22 项；`codebuddy-intl`（npm `product.ioa.json`）→ 53 项；`codebuddy-en`（WorkBuddyAI `product.json`）→ 37 项；`workbuddy`（WorkBuddy `product.cloudhosted.json`）→ 23 项。
+  > ⚠ **此思路已被 v1.4.1 推翻**：product.json 是**发行版候选表**，不是**账号可用表**；照它列会给出大量本机不存在的 id（`default-model` / `primary-model` / `gpt-6-astra` 实测均报 `service info not found`）。v1.4.1 已反转为「静态账号实测表为主」。
+  - ~~`codebuddy`（npm `product.json`）→ 22 项；`codebuddy-intl`（npm `product.ioa.json`）→ 53 项；`codebuddy-en`（WorkBuddyAI `product.json`）→ 37 项；`workbuddy`（WorkBuddy `product.cloudhosted.json`）→ 23 项~~（**已被 v1.4.1 推翻**：这些是发行版候选，非账号可用；且 `workbuddy` 应读 `product.json` 而非 `cloudhosted`）。
   - 修正真机实测清单：`codebuddy` = `glm-5.2, kimi-k2.6, minimax-m2.7, claude-opus-4.8(-1m), gpt-5.4, deepseek-v4-flash/-pro, default, deepseek-v3-0324`（与 `--help` 一致）。
 - **新增后端 `codebuddy-intl`（CodeBuddy 国际版）**：与 `codebuddy` 是同一个 npm CLI 的**国际面**（`product.ioa.json` 目录：`claude-sonnet-5` / `claude-opus-5` / `gemini-3.1-pro` / `gpt-6-astra` / `hy3-ioa` …），面板上是**独立选项**，与「WorkBuddy 国际版」（`codebuddy-en`）区分。别名 `codebuddy-ioa` / `codebuddy-international` / `codebuddy-oversea` 归一。**规范 id 只增不改**：`codebuddy`/`codebuddy-en`/`workbuddy` 仍是历史会话归档键。
 - **实测结论（重要）**：国际面模型**确实被同一个 npm CLI 接受**，但由服务端按账号授权放行 —— 真机 `--model claude-sonnet-5` 返回 `400 model [...] is only available for authorized users`，而 `--model hy4-preview` 正常返回 `PONG`。故 `codebuddy-intl` 的诊断提示专门说明这是**账号授权**问题、不是配置错误（避免用户误改端点/凭据）。
