@@ -10,7 +10,8 @@
 
 import {
   createStatusEngine, createRunner, renderResult, renderStatus, POLICY_TEXT,
-  BACKENDS, DEFAULT_BACKEND, BACKEND_AUTH_IDS, AUTH_DOMAIN_ENDPOINTS, endpointEnv
+  BACKENDS, DEFAULT_BACKEND, BACKEND_AUTH_IDS, AUTH_DOMAIN_ENDPOINTS, endpointEnv,
+  normalizeBridgeSettings, readBridgeSettingsFile
 } from './codebuddy-core.mjs'
 // 仅用于读登录域（auth 库的 auth.domain 是明文）。本形态是宿主进程内的真实 ESM
 // 模块，Node 内建模块可直接静态导入；dynamic 形态（沙箱内 new Function）则不用本文件。
@@ -164,7 +165,11 @@ export const Config = duckNode(buildConfigDuck())
 const CWD_FALLBACK = 'C:\\Users\\lcl\\Desktop\\codebuddy-bridge'
 const OUTPUT_SCHEMA = { type: 'object', additionalProperties: true }
 
-// 设置值的运行时快照（apply 重入时整体重建；settings 变更通道写入后热重载）。
+// 设置值的运行时快照。**来源优先级（v1.3.2 可视化配置界面）**：
+//   设置文件（面板写入，单一事实源） > apply 的行 config > 旧 DSH ctx.settings watch > 默认值。
+// 文件优先是因为旧版本遗留的 patch 行 config 可能携带过期值（实测本机就有一份
+// preferredBackend=codebuddy 的旧行），若让行 config 覆盖文件，面板保存会被静默吞掉。
+// 面板保存不需要重启或热重载：runner 的四个 getter 每次都现读文件（见下方 createRunner）。
 const settings = {
   preferredBackend: DEFAULT_BACKEND,
   defaultModel: '',
@@ -172,13 +177,18 @@ const settings = {
   endpointOverride: ''
 }
 
+function setSettings(snap) {
+  const s = normalizeBridgeSettings(snap)
+  settings.preferredBackend = s.preferredBackend
+  settings.defaultModel = s.defaultModel
+  settings.codebuddyEnToken = s.codebuddyEnToken
+  settings.endpointOverride = s.endpointOverride
+}
+
+/** 行 config → 运行时快照（仅当设置文件不存在时生效；不抛错）。 */
 function absorbSettings(config) {
-  const c = config || {}
-  if (typeof c.preferredBackend === 'string' && BACKENDS.indexOf(c.preferredBackend) >= 0) settings.preferredBackend = c.preferredBackend
-  else settings.preferredBackend = DEFAULT_BACKEND
-  settings.defaultModel = typeof c.defaultModel === 'string' ? c.defaultModel.trim() : ''
-  settings.codebuddyEnToken = typeof c.codebuddyEnToken === 'string' ? c.codebuddyEnToken.trim() : ''
-  settings.endpointOverride = typeof c.endpointOverride === 'string' ? c.endpointOverride.trim() : ''
+  if (readBridgeSettingsFile() !== null) return
+  setSettings(config)
 }
 
 // ── 登录域读取（v1.3.1，宿主侧 fs）───────────────────────────────────────────
@@ -283,14 +293,15 @@ export function apply(ctx, config) {
     },
     planActiveFor: planActiveFor,
     defaultMode: 'auto',
-    // 设置面板 → 每次调用的三读数（v1.3.0）。getter 形式保证 settings watch / 行
-    // config 热重载后立即生效，无需重建 runner。
-    getPreferredBackend: function () { return settings.preferredBackend },
-    getDefaultModel: function () { return settings.defaultModel },
+    // 设置面板 → 每次调用的三读数（v1.3.2 可视化配置界面）。getter 每次**现读设置
+    // 文件**（面板经 /codebuddy-indicator/settings POST 写入），文件缺失才回退
+    // settings 快照（行 config / 旧 ctx.settings 通道）—— 面板保存即时生效，无需重启。
+    getPreferredBackend: function () { const f = readBridgeSettingsFile(); return f ? f.preferredBackend : settings.preferredBackend },
+    getDefaultModel: function () { const f = readBridgeSettingsFile(); return f ? f.defaultModel : settings.defaultModel },
     // 端点/凭据（v1.3.1）：端点覆盖 > 登录域推导；凭据仅 codebuddy-en 需要。
-    getEndpointOverride: function () { return settings.endpointOverride },
+    getEndpointOverride: function () { const f = readBridgeSettingsFile(); return f ? f.endpointOverride : settings.endpointOverride },
     getAuthDomain: function (backend) { return readAuthDomain(backend) },
-    getAuthToken: function (backend) { return backend === 'codebuddy-en' ? settings.codebuddyEnToken : null }
+    getAuthToken: function (backend) { const f = readBridgeSettingsFile(); return backend === 'codebuddy-en' ? (f ? f.codebuddyEnToken : settings.codebuddyEnToken) : null }
   })
   const coreExecute = runner.coreExecute
 

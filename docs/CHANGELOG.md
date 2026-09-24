@@ -2,6 +2,30 @@
 
 本项目遵循 [语义化版本](https://semver.org/)；版本号同步 `package.json`、Git tag 与 GitHub Release（`npm run check` 中的 `scripts/verify.mjs` 在 CI 里锁三处一致）。
 
+## [1.3.2] - 2026-09-25
+
+**可视化配置界面**：DSH 设置里新增「CodeBuddy 桥接」分区 —— 首选 CLI / 默认模型 / 端点覆盖 / 国际版凭据四项偏好在同一面板编辑保存，外加逐后端的生效配置诊断（登录域 → 端点 → 凭据来源）。保存即对 **preset / 动态插件 / MCP 三种形态**同时生效，无需重启。
+
+### 为什么是自绘面板而不是官方自动表单
+
+- 官方 `Config` 导出投影表单只覆盖 `fiber.entry.id === "include"` 的条目（`dsh-config-editor` L31）；preset 桥接行经 `PresetTree` 组合挂载、不是 include → 桥接插件的 `Config` 永远进不了表单投影（0.1.7-rc.1 源码逐行核实）。
+- `ctx.configForms` 的 host 命名空间通道依赖未在本 build 安装的 owner 包与 `WEB_SETTINGS_NAMESPACES` 白名单，且写入 `profiles\web\cordis.patch.yml` —— 对 preset/dynamic/MCP 三个进程不可见。
+- 结论：**自绘分区 + 自家读写路由** 是唯一能让一次保存抵达全部三种形态的路径。表单消费面（settings.section 列表槽、label thunk、locale 读时解析）与 dsh-dream-skin / dsh-mobile-companion 完全同构。
+
+### 机制（单一事实源：`<dsh-home>/codebuddy-bridge-settings.json`）
+
+- **core 新增设置文件原语**（三形态与 host 共用）：`SETTINGS_FILE_NAME` / `SETTINGS_KEYS` / `bridgeSettingsPath()`（`CODEBUDDY_SETTINGS_FILE` 可整体覆盖，测试注入）/ `normalizeBridgeSettings()` / `readBridgeSettingsFile()`（**文件缺失返回 `null`**，与「文件说默认值」可区分）/ `sanitizeBridgeSettings()` / `writeBridgeSettingsFile()`（tmp+rename 原子写，失败清理）。另新增 `BACKEND_MODEL_IDS` / `BACKEND_LABELS` / `backendSettingsMeta()` / `allBackendSettingsMeta()` / `diagnoseBackend()` / `readBackendAuthDomain()`（不占用 `readAuthDomain` 之名：core 以文本注入 dynamic 模板作用域，重名函数声明会静默互相覆盖）。
+- **host 半（codebuddy-indicator）**：新增 `GET/POST /codebuddy-indicator/settings`（webServer 精确路由，handler 内自分发方法；body ≤64KB）。GET 返回视图 = 当前值 + 三后端元数据 + 诊断 + **掩码 token（尾 4 位，明文永不回传浏览器）**；POST 只认四个已知字段全清洗，token 语义：缺省/空串 = 保持现值、`codebuddyEnTokenClear:true` 显式清除。纯函数面（`maskToken`/`settingsView`/`parseSettingsBody`）可脱离 DSH 单测。
+- **浏览器半（client.js）**：注册 `settings.section` 分区（id `codebuddy-bridge-settings`、order 7、label thunk 中英双语）。面板含后端下拉（联动该后端实测模型候选 datalist）、默认模型、端点覆盖、token（password 输入 + 清除勾选）、保存/重载反馈与诊断表（每后端：生效端点+来源、登录域、凭据来源、可能 401 警示）。
+- **三形态热生效**：preset 桥接与 dynamic 模板的 runner getters 每次调用现读设置文件（文件 > 行 config > 默认——旧 patch 遗留行 config 不再吞掉面板保存）；dynamic 模板删掉本地 `readBridgeSettings()` 副本改用 core；MCP 用 core 的 `readBridgeSettingsFile` 替换本地清洗（5s 缓存与 bin 父目录回退保留）。
+- **deploy.mjs 新增第 5 步**：把 `core/` 与 `mcp/` 同步复制到 `<dsh-home>/core` + `<dsh-home>/bin`（家级 patch 的 mcp-codebuddy-global 指向 bin 副本，v1.3.1 时它漂移在 1.3.0 无人察觉）。
+
+### 测试与治理
+
+- 新增 `test/settings-ui.test.mjs` 14 例：core 原语（缺失/往返/原子性/损坏/清洗/写失败清理）、host 纯函数与 GET/POST 端到端（含 token 保持/清除、400/405、掩码无泄漏）、preset 热生效三连（保存即切后端、文件优先于行 config、无文件回退行 config）、client 假 react 烟测（注册形状 + 加载 id 回归锁 + 首帧不触网）。
+- `verify.mjs` 新增 6 道闸门：indicator package.json 版本同步（本次即抓到 1.3.0 漂移）、settings.section 注册、路由注册、core 原语存在、dynamic 无本地重复实现。`mcp.test.mjs` 的 serverInfo 版本断言改为对照源码而非钉死字面量。
+- 版本号本次起 **四处齐步**：根 package.json / indicator package.json / MCP `VERSION` / CHANGELOG 顶部，全部 1.3.2。
+
 ## [1.3.1] - 2026-09-24
 
 **端点与凭据根因修复**：v1.3.0 关于国际版的机制结论（「国际版没有独立安装包，就是同一个 npm CLI + 端点 env」）经真机全盘核实**已被推翻**；本版据实测矩阵重写端点解析，并修复了一个影响**默认后端**的既存缺陷。

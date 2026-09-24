@@ -161,6 +161,23 @@ Codex / 通用 JSON 配置、环境变量与自检见 [`mcp/README.md`](mcp/READ
 - 每次限流/网络失败弹一次三选一；「重试」仅在还有重试次数（最多 2 次尝试）时提供；后台任务失败不弹窗（前台重跑才提示）。
 - 状态灯每 1.2s 轮询家级插件暴露的 HTTP 路由 `GET /codebuddy-indicator/status`，颜色取自主题 token，自动适配明暗。
 
+## 可视化配置界面（v1.3.2）
+
+DSH 设置里新增「**CodeBuddy 桥接**」分区（浏览器半注册官方 `settings.section` 列表槽，与 dsh-dream-skin / dsh-mobile-companion 同款机制），四项用户偏好在同一面板编辑：
+
+| 设置项 | 字段 | 说明 |
+|---|---|---|
+| 首选 CLI | `preferredBackend` | `codebuddy` / `codebuddy-en` / `workbuddy` 下拉。只影响**缺省派发**；会话里显式传 `backend` 参数仍以参数为准 |
+| 默认模型 | `defaultModel` | 输入框带所选后端的实测模型候选（datalist）。留空 = 各 CLI 自身默认 |
+| 端点覆盖 | `endpointOverride` | 一般留空（按登录域自动推导）。仅调试用 |
+| 国际版凭据 | `codebuddyEnToken` | 密码框，页面只显示尾 4 位掩码、明文永不回传浏览器；勾选「清除」可显式清空。留空保存 = 保持现值 |
+
+面板下方是**逐后端诊断表**：每个后端的生效端点（含来源：覆盖 / 登录域 / product）、auth 库登录域、凭据来源（设置面板 / 环境变量 / DSH 凭据库自动复用）、可能 401 的警示与可操作提示。
+
+**保存即对三种形态同时生效，无需重启**：面板经 `POST /codebuddy-indicator/settings` 写入 `<dsh-home>/codebuddy-bridge-settings.json`（单一事实源），preset 桥接、动态插件与 MCP 子进程在**每次调用时**现读该文件（MCP 有 5s 缓存）。优先级：设置文件 > preset 行 config > 默认值。
+
+> 为什么不用 DSH 官方自动表单：官方 `Config` 投影只覆盖 `include` 条目，而 preset 桥接行经 `PresetTree` 组合挂载、不是 include → 永远进不了表单（`dsh-config-editor` 源码逐行核实）。自绘面板 + 自家读写路由是唯一能让一次保存抵达全部三形态的路径，且能展示诊断信息。
+
 ## 目录结构
 
 ```
@@ -177,8 +194,8 @@ codebuddy-first-bridge/
 │  └─ codebuddy-core.mjs        # ★ 共享核心（单一事实来源）：纯函数 + 状态引擎 + 行流 + 执行编排 + 文案
 ├─ scripts/
 │  ├─ build.mjs                 # 生成派生产物（dynamic/host.js 文本注入 + preset 侧 core 副本）
-│  └─ verify.mjs                # 版本三处锁死（package.json ↔ MCP VERSION ↔ CHANGELOG）+ YAML 结构断言
-├─ test/                        # node:test 套件（44 例：纯函数/沙箱模拟/preset/MCP e2e/同步锁定）
+│  └─ verify.mjs                # 版本四处锁死（package.json ↔ indicator package.json ↔ MCP VERSION ↔ CHANGELOG）+ YAML/结构断言
+├─ test/                        # node:test 套件（125 例：纯函数/沙箱模拟/preset/MCP e2e/设置界面/同步锁定）
 │  ├─ helpers/mockdsh.mjs       #   DSH 宿主形状替身（ctx/harness/subprocess/userQuestions）
 │  ├─ fixtures/fake-codebuddy.mjs   #   伪 codebuddy CLI（MCP e2e 夹具）
 │  └─ *.test.mjs
@@ -192,9 +209,9 @@ codebuddy-first-bridge/
 │  └─ codebuddy-indicator/             # 家级状态灯插件（随软件启动、所有会话可见）
 │     ├─ package.json            #   dsh.client 声明（浏览器花名册）
 │     └─ lib/
-│        ├─ index.mjs            #   Host 半：收集 codebuddy/status 事件 + HTTP 路由
+│        ├─ index.mjs            #   Host 半：收集 codebuddy/status 事件 + HTTP 路由（status + v1.3.2 settings GET/POST）
 │        ├─ client-entry.mjs     #   裸名行占位入口（防二次加载 index.mjs 崩溃）
-│        └─ client.js            #   浏览器半：轮询渲染每项目灯
+│        └─ client.js            #   浏览器半：轮询渲染每项目灯 + v1.3.2 可视化配置界面（settings.section）
 ├─ dynamic/                      # 动态 Cordis 插件形态
 │  ├─ host.template.mjs          #   适配层模板（含 /*__CORE__*/ 注入点）
 │  ├─ host.js                    #   【生成物】code.host 函数体（core 文本注入，勿手改）
@@ -227,6 +244,8 @@ codebuddy-first-bridge/
 
 | 版本 | 适配 DSH | 内容 |
 | --- | --- | --- |
+| [v1.3.2](https://github.com/new-256/codebuddy-bridge/releases/tag/v1.3.2) | dsh 0.1.7-rc.1 真机实测 / 全版本 | **可视化配置界面**。DSH 设置新增「CodeBuddy 桥接」分区（自绘 settings.section，官方 Config 表单对 preset 桥接行不可达）：首选 CLI / 默认模型 / 端点覆盖 / 国际版凭据（掩码显示、明文不回传）+ 逐后端生效诊断（登录域→端点→凭据来源→401 警示）。单一事实源 `<dsh-home>/codebuddy-bridge-settings.json`（core 原语 + indicator GET/POST 路由），preset/动态/MCP 三形态**每次调用现读 → 保存即生效无需重启**；deploy.mjs 同步 dsh-home 的 core+bin 副本。测试 +14 例至 125 例，verify 新增版本齐步/结构闸门 |
+
 | [v1.3.1](https://github.com/new-256/codebuddy-bridge/releases/tag/v1.3.1) | dsh 0.1.7-rc.1 真机实测 / 全版本（设置面兼容矩阵见 [COMPATIBILITY](docs/COMPATIBILITY.md)） | **端点与凭据根因修复**（推翻 v1.3.0 的国际版机制结论）。① **三后端各有独立安装包**（真机 `product.json` 核实）：`codebuddy`=npm `@tencent-ai/codebuddy-code`（CodeBuddy，端点 `www.codebuddy.ai`）、`codebuddy-en`=`C:\Program Files\WorkBuddyAI\...`（WorkBuddy AI，`www.workbuddy.ai`）、`workbuddy`=`C:\Program Files\WorkBuddy\...`（WorkBuddy，`copilot.tencent.com`）。② **修掉默认后端 codebuddy 的既存 401**：npm CLI 的 product 端点是 `www.codebuddy.ai` 而登录 token 域是 `www.codebuddy.cn`，域不匹配必然 401（用户日志 312 次 `www.codebuddy.ai` + 116 次 `Authentication required` 的根因）；真机验证注入 `CODEBUDDY_BASE_URL=https://www.codebuddy.cn/v2` 后 `codebuddy`/`workbuddy` 双双返回 PONG。③ **端点按登录域自动对齐**：新增 `resolveEndpoint()`/`endpointEnv()`/`endpointMismatchHint()` 与 `BACKEND_ENDPOINTS`/`AUTH_DOMAIN_ENDPOINTS`/`BACKEND_AUTH_IDS`（取代 `intlEndpointEnv`），宿主侧读 auth 库**明文** `auth.domain`，**仅当与 product 端点不同才注入**；删除语义错误的 `CODEBUDDY_INTERNET_ENVIROMENT=cloudhosted`（`www.workbuddy.ai` 属 `externalDomain`）。④ **`codebuddy-en` 凭据三通道（开箱即用）**：国际 token 被 protector key 封装且密钥不落盘（全盘 51612 文件扫描 + 全部 DPAPI blob 解包零命中；CLI 自身报 `category:"missing-key"` ×21），但**用户通常已在 DSH 里配好同一个 token**（provider 配置指向 `workbuddy.ai/v2` 的 `WORKBUDDY_TOKEN`）——真机实测该 token 下发给 WorkBuddyAI CLI 即返回 PONG。故新增 `resolveEnToken()`：设置面板 `codebuddyEnToken` → 环境变量 `CODEBUDDY_AUTH_TOKEN` → **DSH 凭据库**依次取用，`codebuddy-en` 无需手工配置；三通道皆空才 `AUTH_REQUIRED` + 可操作指引（不再静默 401）。`codebuddyEnBaseUrl` 移除（默认值本身错误），改为 `endpointOverride`。测试 100→111 例全绿 |
 | [v1.3.0](https://github.com/new-256/codebuddy-bridge/releases/tag/v1.3.0) | dsh 0.1.7-rc.1 真机实测 / 全版本（设置面兼容矩阵见 [COMPATIBILITY](docs/COMPATIBILITY.md)） | **CodeBuddy 国际版接入 + 插件设置**。① 三后端：新增 `codebuddy-en`（国际版 CodeBuddy）——~~国际版没有独立 npm 包，就是同一个 `@tencent-ai/codebuddy-code` CLI + 端点切换~~（**该结论已被 v1.3.1 真机推翻**，见上）；端点注入变量 `CODEBUDDY_BASE_URL=https://www.workbuddy.ai/v2` 与 `CODEBUDDY_INTERNET_ENVIROMENT=cloudhosted`（**均已移除**：前者默认值对默认后端是错的，后者语义错误）。后端路由统一为 `resolveBackend()`（显式 > 会话归属 > 用户偏好 > 默认），三形态六处工具 schema 与策略提示同步扩列，模型清单按产品面分列（两列表来自两个已装 CLI `--help` 实测）。② 插件设置（设置面板）：桥接行导出 `Config` 鸭子 schema（preset 沙箱无法 import schemastery；`toJSON()` 产出官方 refs JSON 可被官方 `z()` 原样重建，SettingsForms 投影契约逐函数核实），字段全 volatile 热编辑；旧 DSH（≤0.1.6）`ctx.settings` provider 鸭子探测 + watch 热同步，服务缺失静默降级为行 config；MCP/动态形态共享 dsh-home 根 `codebuddy-bridge-settings.json`。测试 85→100 例 |
 | [v1.2.0](https://github.com/new-256/codebuddy-bridge/releases/tag/v1.2.0) | dsh 0.1.7-rc.1 真机实测 / 全版本（26 版本矩阵） | **Form-A 修复：新 DSH（≥ 0.1.7-alpha.1）preset 静默失效**——dsh 0.1.7-alpha.1 起 preset 从目录制（`.agent-presets/`）切为**声明制**（运行时向 `agentPresets` 注册表登记），旧目录不再被读取，方式 A 装上即失效且无报错。修复 = **indicator 自注册声明**：状态灯插件 `apply()` 里 `ctx.inject(['agentPresets'])` 等注册表出现后 `register(definition)`（官方 standard preset 全量移植 + 桥接行；旧 DSH 上注入器挂起零副作用，不新增任何 loader 行——旧 loader 对导入失败是致命的）。桥接行用裸说明符子路径 `codebuddy-first-bridge/preset-bridge`（注册表以自身 baseUrl 解析相对名，相对路径必然指错）。真机验证：本地 tarball 走真实 `dsh plugin add` 安装 + boot，roster 探针确认 `codebuddy-first` 与官方四个 preset 并列、无 broken。兼容矩阵 22 → 26 版本（新增 C8 声明制契约探针 + 0.1.5-rc.3 / 0.1.7-alpha.1/.2 / 0.1.7-rc.1） |

@@ -28,6 +28,22 @@ if (mcpMatch && logMatch) {
   check('version sync package.json == CHANGELOG top (' + pkg.version + ')', pkg.version === logMatch[1])
 }
 
+// 家级 indicator 包的版本同步（v1.3.1 曾漂移到 1.3.0 而无人察觉）：同一仓库
+// 同一发布单元，四份 package.json/VERSION 必须齐步。
+const indPkgSrc = readFileSync(join(root, 'home-plugin', 'codebuddy-indicator', 'package.json'), 'utf8')
+const indMatch = indPkgSrc.match(/"version":\s*"([^"]+)"/)
+check('version sync package.json == indicator package.json (' + pkg.version + ')', !!indMatch && indMatch[1] === pkg.version)
+
+// v1.3.2 可视化配置界面的结构闸门
+const indClientSrc = readFileSync(join(root, 'home-plugin', 'codebuddy-indicator', 'lib', 'client.js'), 'utf8')
+const indLibSrc = readFileSync(join(root, 'home-plugin', 'codebuddy-indicator', 'lib', 'index.mjs'), 'utf8')
+check('client.js registers settings.section panel', indClientSrc.includes('name: "settings.section"'))
+check('client.js settings panel id stable', indClientSrc.includes('id: "codebuddy-bridge-settings"'))
+check('indicator serves /codebuddy-indicator/settings route', indLibSrc.includes("path: '/codebuddy-indicator/settings'"))
+const coreSrc = readFileSync(join(root, 'core', 'codebuddy-core.mjs'), 'utf8')
+check('core owns settings-file primitives', coreSrc.includes('export function readBridgeSettingsFile') && coreSrc.includes('export function writeBridgeSettingsFile'))
+check('dynamic template uses shared core reader (no local duplicate)', !readFileSync(join(root, 'dynamic', 'host.template.mjs'), 'utf8').match(/function readBridgeSettings\(\)/))
+
 const cordis = readFileSync(join(root, 'preset', 'codebuddy-first', 'agent.cordis.yml'), 'utf8')
 check("agent.cordis.yml has bridge row (id: codebuddy-first-bridge)", /^- id: codebuddy-first-bridge$/m.test(cordis))
 check("agent.cordis.yml bridge row points to './codebuddy-first-bridge.mjs'", /name:\s*'\.\/codebuddy-first-bridge\.mjs'/.test(cordis))

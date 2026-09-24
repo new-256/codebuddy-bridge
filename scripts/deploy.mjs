@@ -105,4 +105,28 @@ if (bad) {
 
 const ver = JSON.parse(readFileSync(join(DEP, 'package.json'), 'utf8')).version
 log(`\n✓ 部署完成，版本 ${ver}`)
+
+// 5) dsh-home 侧的独立形态（家级 cordis.patch.yml 的 mcp-codebuddy-global 指向
+//    <dsh-home>/bin/codebuddy-mcp-server.mjs，它 import '../core/codebuddy-core.mjs'）。
+//    v1.3.2 起设置面板三形态共享同一份设置文件，MCP 半必须同步部署，否则面板
+//    保存对它不可见（旧 bin 副本还会静默用旧版语义）。
+const HOME_MCP = [
+  ['core/codebuddy-core.mjs', join(DSH_HOME, 'core', 'codebuddy-core.mjs')],
+  ['mcp/codebuddy-mcp-server.mjs', join(DSH_HOME, 'bin', 'codebuddy-mcp-server.mjs')]
+]
+let homeBad = 0
+log('\n▸ dsh-home 独立形态（MCP bin + core）')
+for (const [rel, dest] of HOME_MCP) {
+  const src = join(REPO, rel)
+  if (!existsSync(src)) { log(`  ! ${rel.padEnd(40)} 仓库缺失`); continue }
+  if (!existsSync(dirname(dest))) { log(`  - ${rel.padEnd(40)} 目标目录不存在（${DSH_HOME}），跳过`); continue }
+  copyFileSync(src, dest)
+  if (sha(src) !== sha(dest)) { log(`  ✗ ${rel.padEnd(40)} 复制后不一致`); homeBad++ }
+  else log(`  ✓ ${rel.padEnd(40)} → ${dirname(dest)}`)
+}
+if (homeBad) {
+  console.error(`\n✗ dsh-home MCP 部署失败：${homeBad} 个文件不一致。`)
+  process.exit(1)
+}
+
 log('  请重启 DSH（或确认 profile 的 patchReload 生效）后，检查 preset 列表里 codebuddy-first 是否在列。')

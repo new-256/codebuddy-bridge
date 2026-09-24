@@ -31,13 +31,15 @@
 | 0.3.36 | 0.1.5-rc.1 | v1.1.7 事故机型（桌面壳安全模式）；dsh 0.1.2-rc.1 环境实测触发 crash |
 | （当前） | 0.1.7-rc.1 | 2026-09-24 本机运行中；v1.2.0/v1.3.0 在此环境完成真机验证（§6.3） |
 
-**v1.3.0 插件设置的版本面**（优先 CLI / 默认模型 / 国际端点三项偏好）：
+**v1.3.2 插件设置的版本面**（首选 CLI / 默认模型 / 端点覆盖 / 国际版凭据四项偏好 + 诊断）：
 
 | dsh 世代 | 设置通道 | 说明 |
 | --- | --- | --- |
-| ≥ 0.1.7-alpha.1（新） | **设置面板**（dsh-settings SettingsForms 自动投影插件 Config） | 字段全部 volatile（热编辑免重载），改动落 profile 用户补丁 |
-| ≤ 0.1.6（旧） | `ctx.settings` provider/document（有服务时注册 `codebuddy-bridge` namespace + watch）或 profile patch 行 config 手改 | 服务缺失/未挂载 provider 时**静默降级**为行 config，功能零损失 |
-| 全版本 | MCP/动态形态：dsh-home 根 `codebuddy-bridge-settings.json` | 与面板/patch 写的偏好共享（DSH preset 面板改动落行 config；该文件供 MCP 独立读取） |
+| ≥ 0.1.7-alpha.1（新） | **可视化配置界面**（DSH 设置「CodeBuddy 桥接」分区，`settings.section` 列表槽自绘） | 保存即经 `POST /codebuddy-indicator/settings` 写 `<dsh-home>/codebuddy-bridge-settings.json`；官方 `Config` 自动表单对 preset 桥接行不可达（`dsh-config-editor` 只列 `include` 条目），故走自家路由。旧版桥接行的 `Config` 鸭子导出保留（无害），仅作旧宿主兼容 |
+| ≤ 0.1.6（旧） | 无面板（`settings.section` 槽尚未出现，注入器挂起零副作用）；`ctx.settings` provider/document 或 profile patch 行 config 手改 | 服务缺失/未挂载 provider 时**静默降级**为行 config，功能零损失 |
+| 全版本 | **单一事实源 `<dsh-home>/codebuddy-bridge-settings.json`** | 面板（经 indicator host 路由）写入；preset / 动态 / MCP 三形态每次调用现读（MCP 5s 缓存）。优先级：设置文件 > 行 config > 默认值 —— **保存无需重启**，旧 patch 遗留行 config 不再吞掉面板保存 |
+
+> v1.3.1 及以前的「DSH 面板改动落行 config、MCP 独立读文件」双轨制在 v1.3.2 合并为文件单轨；行 config 仅作为文件不存在时的兼容回退保留。
 
 三个后端与 dsh 版本无关，但**各有独立安装包**（v1.3.1 由真机 `product.json` 核实，
 推翻 v1.3.0 的「同一 npm CLI」结论；见 [CHANGELOG](CHANGELOG.md) §1.3.1 与

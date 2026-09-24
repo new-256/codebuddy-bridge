@@ -37,49 +37,40 @@ import {
   isLimited, isTransientCliError, failureHint, parseCodebuddyJson, buildResult, buildArgv, createLineStream, createStatusEngine,
   buildMcpBridgePayload, MCP_BRIDGE_FILE,
   BACKENDS, DEFAULT_BACKEND, resolveBackend, endpointEnv, endpointMismatchHint,
-  BACKEND_AUTH_IDS, resolveEnToken
+  BACKEND_AUTH_IDS, resolveEnToken, readBridgeSettingsFile, defaultBridgeSettings
 } from '../core/codebuddy-core.mjs'
 
 const NAME = 'codebuddy-mcp-server'
-const VERSION = '1.3.1'
+const VERSION = '1.3.2'
 const PROTOCOL = '2024-11-05'
 
 // Default cwd for codebuddy calls that do not pass one (override: CODEBUDDY_MCP_CWD).
 const CWD_FALLBACK = process.env.CODEBUDDY_MCP_CWD || 'C:\\Users\\lcl\\Desktop\\codebuddy-bridge'
 
-// ── user settings (v1.3.1, shared with the DSH forms) ───────────────────────
+// ── user settings (v1.3.2, shared with the visual config panel) ─────────────
 // dsh-home 根目录的 codebuddy-bridge-settings.json：{"preferredBackend": "...",
 // "defaultModel": "...", "codebuddyEnToken": "...", "endpointOverride": "..."}。
-// DSH preset 形态的设置面板与动态形态读写同一份文件；MCP 每次调用前重读，改动即生效。
-// 文件缺失 = 默认值。
-const SETTINGS_FILE = 'codebuddy-bridge-settings.json'
-function resolveSettingsPath() {
+// 唯一写者是设置面板（indicator 的 POST /codebuddy-indicator/settings）；
+// preset / dynamic / MCP 三形态读同一份、同一实现（core.readBridgeSettingsFile）。
+// MCP 子进程定位 dsh-home 的优先级：CODEBUDDY_INDICATOR_DIR > DSH_HOME >
+// bin 的父目录（部署形态 <dsh-home>/bin/codebuddy-mcp-server.mjs）。
+function mcpSettingsPath() {
   const explicit = process.env.CODEBUDDY_INDICATOR_DIR || process.env.DSH_HOME
-  if (explicit) return joinPath(explicit, SETTINGS_FILE)
+  if (explicit) return joinPath(explicit, 'codebuddy-bridge-settings.json')
   try {
     const selfDir = dirname(fileURLToPath(import.meta.url))
-    if (/[\\/]bin$/.test(selfDir)) return joinPath(dirname(selfDir), SETTINGS_FILE)
+    if (/[\\/]bin$/.test(selfDir)) return joinPath(dirname(selfDir), 'codebuddy-bridge-settings.json')
   } catch (e) { }
   return null
 }
-const SETTINGS_PATH = resolveSettingsPath()
+const SETTINGS_PATH = mcpSettingsPath()
+const SETTINGS_DEFAULTS = defaultBridgeSettings()
 let settingsCache = { at: 0, value: null }
 function readSettings() {
   // 5s 缓存：同一批并发调用不重复读盘，改动也足够快生效。
   const now = Date.now()
   if (settingsCache.value && now - settingsCache.at < 5000) return settingsCache.value
-  const snap = { preferredBackend: DEFAULT_BACKEND, defaultModel: '', codebuddyEnToken: '', endpointOverride: '' }
-  if (SETTINGS_PATH) {
-    try {
-      const raw = JSON.parse(readFileSync(SETTINGS_PATH, 'utf8'))
-      if (raw && typeof raw === 'object') {
-        if (typeof raw.preferredBackend === 'string' && BACKENDS.indexOf(raw.preferredBackend) >= 0) snap.preferredBackend = raw.preferredBackend
-        if (typeof raw.defaultModel === 'string') snap.defaultModel = raw.defaultModel.trim()
-        if (typeof raw.codebuddyEnToken === 'string') snap.codebuddyEnToken = raw.codebuddyEnToken.trim()
-        if (typeof raw.endpointOverride === 'string') snap.endpointOverride = raw.endpointOverride.trim()
-      }
-    } catch (e) { }
-  }
+  const snap = readBridgeSettingsFile({ path: SETTINGS_PATH }) || SETTINGS_DEFAULTS
   settingsCache = { at: now, value: snap }
   return snap
 }

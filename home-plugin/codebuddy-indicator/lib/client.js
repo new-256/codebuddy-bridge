@@ -60,7 +60,39 @@ window.__ModuleLoader__.load({
       ".cb-pop-mono{font-family:Consolas,Menlo,monospace;font-size:11px;color:var(--dsw-alias-label-secondary)}",
       ".cb-pop-line{padding:1px 0}",
       ".cb-pop-cur{background:rgba(59,130,246,.12);border-radius:4px;padding:3px 6px;margin:4px 0}",
-      ".cb-pop-cur .cb-pop-mono{color:var(--dsw-alias-label-primary)}"
+      ".cb-pop-cur .cb-pop-mono{color:var(--dsw-alias-label-primary)}",
+      // ── v1.3.2 设置面板（settings.section 分区）──────────────────────────────
+      ".cbs-root{display:flex;flex-direction:column;gap:14px;max-width:680px;font-size:13px;line-height:1.55;color:var(--dsw-alias-label-primary)}",
+      ".cbs-h{font-size:14px;font-weight:600}",
+      ".cbs-sub{color:var(--dsw-alias-label-secondary);font-size:12px;margin-top:2px}",
+      ".cbs-grid{display:grid;grid-template-columns:130px 1fr;gap:8px 12px;align-items:center}",
+      ".cbs-label{color:var(--dsw-alias-label-secondary);text-align:right;font-size:12px}",
+      ".cbs-ctl{display:flex;flex-direction:column;gap:4px;min-width:0}",
+      ".cbs-note{color:var(--dsw-alias-label-tertiary,var(--dsw-alias-label-secondary));font-size:11px}",
+      ".cbs-input,.cbs-select{width:100%;box-sizing:border-box;height:28px;padding:0 8px;border-radius:6px;border:1px solid var(--dsw-alias-border-l1);background:var(--dsw-alias-bg-input,var(--dsw-alias-bg-layer-2));color:var(--dsw-alias-label-primary);font-size:12px;font-family:inherit;outline:none}",
+      ".cbs-input:focus,.cbs-select:focus{border-color:var(--dsw-alias-border-brand,var(--dsw-static-blue-500,#3b82f6))}",
+      ".cbs-check{display:flex;align-items:center;gap:6px;font-size:12px;color:var(--dsw-alias-label-secondary);cursor:pointer;user-select:none}",
+      ".cbs-actions{display:flex;align-items:center;gap:10px}",
+      ".cbs-btn{height:28px;padding:0 14px;border-radius:6px;border:1px solid var(--dsw-alias-border-brand,var(--dsw-static-blue-500,#3b82f6));background:var(--dsw-static-blue-500,#3b82f6);color:#fff;font-size:12px;cursor:pointer}",
+      ".cbs-btn:hover{opacity:.9}",
+      ".cbs-btn:disabled{opacity:.5;cursor:default}",
+      ".cbs-btn-ghost{border:1px solid var(--dsw-alias-border-l1);background:transparent;color:var(--dsw-alias-label-secondary)}",
+      ".cbs-btn-ghost:hover{color:var(--dsw-alias-label-primary);border-color:var(--dsw-alias-border-l2);opacity:1}",
+      ".cbs-msg{font-size:12px}",
+      ".cbs-msg-ok{color:var(--dsw-static-green-500,#22c55e)}",
+      ".cbs-msg-err{color:var(--dsw-alias-state-error-primary)}",
+      ".cbs-diag{border:1px solid var(--dsw-alias-border-l1);border-radius:8px;overflow:hidden}",
+      ".cbs-diag-h{padding:6px 10px;background:var(--dsw-alias-bg-layer-2);font-weight:600;font-size:12px;border-bottom:1px solid var(--dsw-alias-border-l1)}",
+      ".cbs-diag-row{display:grid;grid-template-columns:150px 1fr auto;gap:8px;padding:7px 10px;border-bottom:1px dashed var(--dsw-alias-border-l1);align-items:center;font-size:12px}",
+      ".cbs-diag-row:last-child{border-bottom:none}",
+      ".cbs-diag-name{font-weight:600}",
+      ".cbs-diag-mono{font-family:Consolas,Menlo,monospace;font-size:11px;color:var(--dsw-alias-label-secondary);word-break:break-all}",
+      ".cbs-badge{display:inline-flex;align-items:center;gap:4px;height:18px;padding:0 7px;border-radius:9px;font-size:11px;white-space:nowrap}",
+      ".cbs-badge-ok{color:var(--dsw-static-green-500,#22c55e);border:1px solid var(--dsw-static-green-500,#22c55e)}",
+      ".cbs-badge-warn{color:var(--dsw-alias-state-warn-primary);border:1px solid var(--dsw-alias-state-warn-primary)}",
+      ".cbs-badge-err{color:var(--dsw-alias-state-error-primary);border:1px solid var(--dsw-alias-state-error-primary)}",
+      ".cbs-card{border:1px solid var(--dsw-alias-border-l1);border-radius:8px;padding:12px 14px}",
+      ".cbs-card-h{font-weight:600;font-size:12px;margin-bottom:10px;color:var(--dsw-alias-label-secondary)}"
     ].join("");
     if (typeof document !== "undefined" && document.querySelector("style[data-plugin-css=\"codebuddy-indicator\"]") === null) {
       const tag = document.createElement("style");
@@ -285,6 +317,128 @@ window.__ModuleLoader__.load({
         react.createElement(Popup, { s: s, mode: modeText, onClose: function () { setOpen(false); } }));
     }
 
+    // ── v1.3.2：可视化配置界面（settings.section 分区）────────────────────────
+    // 数据通道是自家路由 GET/POST /codebuddy-indicator/settings（host 半写入
+    // dsh-home/codebuddy-bridge-settings.json；preset/dynamic/MCP 三形态每次调用
+    // 现读该文件 → 保存即生效，无需重启）。为什么不用官方自动表单：
+    // dsh-config-editor 只列 fiber.entry.id === "include" 的条目，而 preset 经
+    // PresetTree 组合挂载、bridge 行不是 include → 桥接插件的 Config 永远进不了
+    // 表单投影（0.1.7-rc.1 源码逐行核实）。自绘面板同时能展示诊断信息，这是
+    // 自动表单做不到的。
+
+    function SettingsPanel() {
+      const vt = react.useState(null); const view = vt[0]; const setView = vt[1];
+      const ft = react.useState(null); const form = ft[0]; const setForm = ft[1];
+      const mt = react.useState(null); const msg = mt[0]; const setMsg = mt[1];
+      const lt = react.useState(false); const loading = lt[0]; const setLoading = lt[1];
+      const clearTok = react.useState(false); const wantClear = clearTok[0]; const setWantClear = clearTok[1];
+
+      const adopt = react.useCallback(function (v) {
+        setView(v);
+        setForm({ preferredBackend: v.preferredBackend, defaultModel: v.defaultModel, endpointOverride: v.endpointOverride, codebuddyEnToken: "" });
+      }, []);
+
+      const reload = react.useCallback(function () {
+        fetch("/codebuddy-indicator/settings", { cache: "no-store" })
+          .then(function (r) { return r.ok ? r.json() : Promise.reject(new Error("HTTP " + r.status)); })
+          .then(adopt)
+          .catch(function (e) { setMsg({ kind: "err", text: "读取失败：" + e.message }); });
+      }, [adopt]);
+
+      react.useEffect(function () { reload(); }, [reload]);
+
+      const setField = function (k) {
+        return function (e) { setForm(function (f) { const n = Object.assign({}, f); n[k] = e.target.value; return n }); };
+      };
+
+      const save = function () {
+        if (!form || loading) return;
+        setLoading(true); setMsg(null);
+        const body = { preferredBackend: form.preferredBackend, defaultModel: form.defaultModel, endpointOverride: form.endpointOverride };
+        if (form.codebuddyEnToken) body.codebuddyEnToken = form.codebuddyEnToken;
+        if (wantClear) body.codebuddyEnTokenClear = true;
+        fetch("/codebuddy-indicator/settings", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(body)
+        })
+          .then(function (r) { return r.json().then(function (j) { return { code: r.status, j: j }; }); })
+          .then(function (res) {
+            setLoading(false);
+            if (res.code === 200 && res.j && res.j.ok) {
+              setWantClear(false);
+              if (res.j.settings) adopt(res.j.settings);
+              setMsg({ kind: "ok", text: "已保存 ✓ 立即生效（preset / 动态 / MCP 三种形态共享同一份设置）" });
+            } else {
+              setMsg({ kind: "err", text: "保存失败：" + ((res.j && res.j.error) || ("HTTP " + res.code)) });
+            }
+          })
+          .catch(function (e) { setLoading(false); setMsg({ kind: "err", text: "保存失败：" + e.message }); });
+      };
+
+      if (!view || !form) {
+        return react.createElement("div", { className: "cbs-root" },
+          react.createElement("div", { className: "cbs-h" }, "CodeBuddy 桥接"),
+          react.createElement("div", { className: "cbs-sub" }, msg ? msg.text : "加载设置…"));
+      }
+      const beList = Array.isArray(view.backends) ? view.backends : [];
+      const cur = beList.filter(function (b) { return b.id === form.preferredBackend })[0];
+      const models = (cur && Array.isArray(cur.models)) ? cur.models : [];
+      return react.createElement("div", { className: "cbs-root" },
+        react.createElement("div", null,
+          react.createElement("div", { className: "cbs-h" }, "CodeBuddy 桥接"),
+          react.createElement("div", { className: "cbs-sub" }, "CLI 派发偏好（首选后端 / 默认模型 / 端点 / 国际版凭据）。保存后对 codebuddy-first preset、动态插件与 MCP 三种形态即时生效。")),
+        react.createElement("div", { className: "cbs-card" },
+          react.createElement("div", { className: "cbs-card-h" }, "偏好设置"),
+          react.createElement("div", { className: "cbs-grid" },
+            react.createElement("label", { className: "cbs-label", htmlFor: "cbs-backend" }, "首选 CLI"),
+            react.createElement("div", { className: "cbs-ctl" },
+              react.createElement("select", { id: "cbs-backend", className: "cbs-select", value: form.preferredBackend, onChange: setField("preferredBackend") },
+                beList.map(function (b) { return react.createElement("option", { key: b.id, value: b.id }, b.label + "（" + b.id + "）"); })),
+              cur && cur.needsToken ? react.createElement("div", { className: "cbs-note" }, "国际版 token 被桌面 App 封装不落盘，需在下方「国际版凭据」提供（或在 DSH 配好 workbuddy provider 自动复用）。") : null,
+              react.createElement("div", { className: "cbs-note" }, "会话里显式传 backend 参数时仍以参数为准；此处只影响缺省派发。")),
+            react.createElement("label", { className: "cbs-label", htmlFor: "cbs-model" }, "默认模型"),
+            react.createElement("div", { className: "cbs-ctl" },
+              react.createElement("input", { id: "cbs-model", className: "cbs-input", list: "cbs-model-list", value: form.defaultModel, onChange: setField("defaultModel"), placeholder: "留空 = 各 CLI 自身默认", spellCheck: false }),
+              react.createElement("datalist", { id: "cbs-model-list" }, models.map(function (m) { return react.createElement("option", { key: m, value: m }); })),
+              react.createElement("div", { className: "cbs-note" }, "候选来自当前所选后端的实测模型列表；也可手输任意 CLI 支持的模型 id。")),
+            react.createElement("label", { className: "cbs-label", htmlFor: "cbs-endpoint" }, "端点覆盖"),
+            react.createElement("div", { className: "cbs-ctl" },
+              react.createElement("input", { id: "cbs-endpoint", className: "cbs-input", value: form.endpointOverride, onChange: setField("endpointOverride"), placeholder: "留空 = 按登录域自动推导（推荐）", spellCheck: false }),
+              react.createElement("div", { className: "cbs-note" }, "仅调试用。留空时端点由 auth 库的登录域推导（见下方诊断），错配会导致 CLI 401。")),
+            react.createElement("label", { className: "cbs-label", htmlFor: "cbs-token" }, "国际版凭据"),
+            react.createElement("div", { className: "cbs-ctl" },
+              react.createElement("input", { id: "cbs-token", className: "cbs-input", type: "password", value: form.codebuddyEnToken, onChange: setField("codebuddyEnToken"), placeholder: view.codebuddyEnToken && view.codebuddyEnToken.set ? ("已保存 " + view.codebuddyEnToken.hint + "，留空保持不变") : "粘贴 workbuddy.ai 的 token（也可不填，见右侧诊断）", spellCheck: false, autoComplete: "off" }),
+              react.createElement("label", { className: "cbs-check" },
+                react.createElement("input", { type: "checkbox", checked: wantClear, onChange: function (e) { setWantClear(e.target.checked); } }),
+                "清除已保存的 token"),
+              react.createElement("div", { className: "cbs-note" }, "存储于本机 " + (view.fileName || "codebuddy-bridge-settings.json") + "，页面只显示尾 4 位掩码，明文永不回传浏览器。")),
+            react.createElement("div", { className: "cbs-label" }, ""),
+            react.createElement("div", { className: "cbs-actions" },
+              react.createElement("button", { className: "cbs-btn", type: "button", onClick: save, disabled: loading }, loading ? "保存中…" : "保存"),
+              react.createElement("button", { className: "cbs-btn cbs-btn-ghost", type: "button", onClick: function () { setWantClear(false); reload(); } }, "重载"),
+              msg ? react.createElement("span", { className: "cbs-msg " + (msg.kind === "ok" ? "cbs-msg-ok" : "cbs-msg-err") }, msg.text) : null))
+        ),
+        react.createElement("div", { className: "cbs-diag" },
+          react.createElement("div", { className: "cbs-diag-h" }, "各后端当前生效配置（诊断）"),
+          (Array.isArray(view.diagnostics) ? view.diagnostics : []).map(function (d, i) {
+            const meta = beList.filter(function (b) { return b.id === d.backend })[0];
+            const badge = d.backend === view.preferredBackend
+              ? react.createElement("span", { className: "cbs-badge cbs-badge-ok" }, "首选")
+              : null;
+            const srcText = d.endpointSource === "override" ? "覆盖" : d.endpointSource === "auth-domain" ? "登录域" : "product";
+            const warn = d.mismatch ? react.createElement("span", { className: "cbs-badge cbs-badge-warn", title: d.hint || "" }, "需凭据/可能 401") : null;
+            return react.createElement("div", { key: d.backend, className: "cbs-diag-row" },
+              react.createElement("div", { className: "cbs-diag-name" }, (meta ? meta.label : d.backend), " ", badge, warn),
+              react.createElement("div", null,
+                react.createElement("div", { className: "cbs-diag-mono" }, d.endpoint || "—", " (", srcText, ")"),
+                react.createElement("div", { className: "cbs-diag-mono" }, "登录域: ", d.authDomain || "未检测到", " ｜ 凭据: ", d.tokenHint),
+                d.hint ? react.createElement("div", { className: "cbs-note", style: { color: "var(--dsw-alias-state-warn-primary)" } }, d.hint) : null),
+              react.createElement("div", { className: "cbs-diag-mono" }, "模型 ", d.defaultModel));
+          }))
+      );
+    }
+
     function apply(ctx) {
       if (typeof ctx.inject !== "function") return;
       ctx.inject(["slots"], function (scope) {
@@ -296,6 +450,22 @@ window.__ModuleLoader__.load({
           // injectedSessionId 避免与标准 props 冲突。sessionsSvc 两代通用（sessions
           // 服务的 list 快照至今保留）。
           return slots.register({ name: "conversation.session.header.utilities", id: "codebuddy-indicator-home", order: 50, inject: function (injectedSessionId) { return { injectedSessionId: injectedSessionId, sessionsSvc: scope.get("sessions") }; } }, function (props) { return react.createElement(Indicator, props); });
+        });
+        // v1.3.2：可视化配置界面。settings.section 是列表槽（root 级），由
+        // dsh-client-ui-settings-general 在 SettingsRoot 的 children 表声明；
+        // slots.inject 保证上账后才注册（先于设置界面加载也能挂上）。
+        // order=7：general=0、bot-gateway=5、mobile-companion=6 之后。
+        // label 用 thunk（locale 切换时 resolveSlotLabel 在读时重算）。
+        scope.slots.inject("settings.section", function () {
+          return slots.register({
+            name: "settings.section",
+            id: "codebuddy-bridge-settings",
+            order: 7,
+            label: function () {
+              try { return (String(navigator.language || "").toLowerCase().indexOf("zh") === 0) ? "CodeBuddy 桥接" : "CodeBuddy Bridge"; }
+              catch (e) { return "CodeBuddy Bridge"; }
+            }
+          }, SettingsPanel);
         });
       });
     }

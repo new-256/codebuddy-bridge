@@ -210,26 +210,28 @@ test('indicator: apply() 装配 —— mode/status 事件入状态机，webServe
   const ws = { register: (r) => { registered.push(r); return () => {} } }
   const webCtx = { get: () => ws, effect: (fn) => { fn(); return () => {} } }
   injectCb(webCtx)
-  assert.equal(registered.length, 1)
-  assert.equal(registered[0].path, '/codebuddy-indicator/status')
+  // v1.3.2 起有两条路由：status + settings（可视化配置界面）
+  assert.deepEqual(registered.map((r) => r.path).sort(), ['/codebuddy-indicator/settings', '/codebuddy-indicator/status'])
+  const statusRoute = registered.find((r) => r.path === '/codebuddy-indicator/status')
+  assert.ok(statusRoute)
 
   handlers['codebuddy/mode']({ active: true })
   handlers['codebuddy/status']({ snapshot: { projects: [{ cwd: '/p/x', state: 'ok' }] } })
   let body = null
   const res = { writeHead: () => {}, end: (b) => { body = b } }
-  registered[0].handler({}, res)
+  statusRoute.handler({}, res)
   const parsed = JSON.parse(body)
   assert.equal(parsed.presetActive, true)
   assert.equal(parsed.state, 'ok')
   assert.equal(parsed.projects[0].cwd, '/p/x')
   // 按会话租约端到端：带 sessionId 的宣告要出现在路由返回的 presetSessions 里
   handlers['codebuddy/mode']({ active: true, sessionId: 'sess-abc' })
-  registered[0].handler({}, res)
+  statusRoute.handler({}, res)
   const list = JSON.parse(body).presetSessions.slice().sort()
   assert.deepEqual(list, ['live-cb', 'sess-abc'], '实时枚举（live-cb，非上报）∪ 上报（sess-abc）经路由送达；普通会话 live-other 不在名单')
   // collector 直推（动态形态通道）
   provided.codebuddyCollector.mergeSnapshot({ projects: [{ cwd: '/p/y', state: 'running', running: 1 }] })
-  registered[0].handler({}, res)
+  statusRoute.handler({}, res)
   const parsed2 = JSON.parse(body)
   assert.equal(parsed2.state, 'running')
   assert.equal(parsed2.running, 1)

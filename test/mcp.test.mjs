@@ -6,6 +6,7 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import { spawn } from 'node:child_process'
+import { readFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import { dirname, join, resolve as resolvePath } from 'node:path'
 
@@ -13,6 +14,7 @@ import { isolateHostState } from './helpers/mockdsh.mjs'
 isolateHostState()
 
 const SERVER = fileURLToPath(new URL('../mcp/codebuddy-mcp-server.mjs', import.meta.url))
+const MCP_SRC_VERSION = readFileSync(SERVER, 'utf8').match(/const VERSION = '([^']+)'/)[1]
 const FAKE_BIN = fileURLToPath(new URL('./fixtures/fake-codebuddy.mjs', import.meta.url))
 const FIXTURES_DIR = dirname(FAKE_BIN)
 const REPO_ROOT = resolvePath(FIXTURES_DIR, '..', '..')
@@ -73,7 +75,9 @@ test('协议握手 + 工具列表', async () => {
   const { child, client, init } = await startServer({})
   try {
     assert.equal(init.result.serverInfo.name, 'codebuddy-mcp-server')
-    assert.equal(init.result.serverInfo.version, '1.3.1')
+    // 版本从源码读取（与 verify.mjs 同源）：版本号每发布必变，测试不该钉死它 ——
+    // 但 serverInfo 必须与源码声明一致（握手回显没写错）。
+    assert.equal(init.result.serverInfo.version, MCP_SRC_VERSION)
     const tools = await client.request('tools/list', {})
     assert.deepEqual(tools.result.tools.map((t) => t.name).sort(), ['codebuddy_continue', 'codebuddy_run', 'codebuddy_status'])
     const ping = await client.request('ping', {})

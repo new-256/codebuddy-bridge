@@ -39,6 +39,14 @@
 // 声明制、目录式 preset 不再被读取；由 indicator 向 agentPresets 注册表登记
 // codebuddy-first preset（官方 standard 全量 + 桥接行）。机制详见 ./preset-definition.mjs。
 import { declareCodebuddyFirstPreset } from './preset-definition.mjs'
+// v1.3.2：可视化配置界面 —— 设置文件的读写原语全部来自 core（单一事实源；
+// preset/dynamic/MCP 三形态读同一实现）。相对路径 ../../../core 在部署形态
+// （<profile>/node_modules/codebuddy-first-bridge/home-plugin/codebuddy-indicator/lib/）
+// 与仓库形态下同构成立。
+import {
+  BACKENDS, SETTINGS_KEYS, readBridgeSettingsFile, writeBridgeSettingsFile, sanitizeBridgeSettings,
+  defaultBridgeSettings, allBackendSettingsMeta, diagnoseBackend, SETTINGS_FILE_NAME
+} from '../../../core/codebuddy-core.mjs'
 
 export const PRESET_TTL_MS = 75000
 export const PRESET_ID = 'codebuddy-first'
@@ -198,6 +206,50 @@ export function createIndicatorState(opts) {
 export const name = 'codebuddy-indicator'
 export const inject = []
 
+// v1.3.2 可视化配置界面：设置文件 GET/POST 的纯函数面（可脱离 DSH 单测）。
+// ──────────────────────────────────────────────────────────────────────────────
+
+/** token 掩码：只回传是否已设置 + 尾 4 位，绝不把明文 token 送回浏览器。 */
+export function maskToken(tok) {
+  const s = String(tok || '')
+  if (!s) return { set: false, hint: '' }
+  return { set: true, hint: s.length <= 8 ? '••••' : '••••' + s.slice(-4) }
+}
+
+/**
+ * 设置面板的完整视图（GET 响应体）：当前值 + 元数据 + 逐后端诊断 + 掩码 token。
+ * @param {{readFileSync?:Function,writeFileSync?:Function,path?:string|null,env?:object,dir?:string}} [io]
+ */
+export function settingsView(io) {
+  const o = io || {}
+  const fromFile = readBridgeSettingsFile(o)
+  const snap = fromFile || defaultBridgeSettings()
+  return {
+    fileName: SETTINGS_FILE_NAME,
+    persisted: fromFile !== null,
+    preferredBackend: snap.preferredBackend,
+    defaultModel: snap.defaultModel,
+    endpointOverride: snap.endpointOverride,
+    // token 明文永不外传：只给「是否已设置 + 尾 4 位掩码」。POST 时留空 = 保持现值。
+    codebuddyEnToken: maskToken(snap.codebuddyEnToken),
+    backends: allBackendSettingsMeta(),
+    diagnostics: BACKENDS.map((b) => diagnoseBackend(b, snap, o))
+  }
+}
+
+/** POST body（文本）→ {ok, raw?, value?|error?}：只认四个已知字段，全清洗。 */
+export function parseSettingsBody(text) {
+  if (typeof text !== 'string' || !text.trim()) return { ok: false, error: 'empty body' }
+  let raw
+  try { raw = JSON.parse(text) } catch (e) { return { ok: false, error: 'invalid JSON' } }
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return { ok: false, error: 'body must be an object' }
+  for (const k of SETTINGS_KEYS) {
+    const v = raw[k]
+    if (v !== undefined && typeof v !== 'string') return { ok: false, error: 'field ' + k + ' must be a string' }
+  }
+  return { ok: true, raw: raw, value: sanitizeBridgeSettings(raw) }
+}
+
 export function apply(ctx) {
   // 实时枚举器：遍历活着的 agent，读它实际组合的 preset id。全程防御——任一
   // 服务或字段缺失（DSH 内部 API 变动）都只是返回空数组，退回 preset 上报兜底。
@@ -305,6 +357,60 @@ export function apply(ctx) {
           }
         }
       }), 'codebuddy-indicator: status route')
+
+      // ── v1.3.2：可视化配置界面的读写路由 ──────────────────────────────────
+      // webServer.register 不做方法路由 → handler 内自己分发。单一写者（本 host
+      // 进程），文件原子写；preset/dynamic/MCP 三形态在每次调用时现读该文件，
+      // 保存即生效、无需重启。GET 永不回传 token 明文（见 settingsView/maskToken）。
+
+      const readBody = (req, limit) => new Promise((resolve, reject) => {
+        const chunks = []
+        let size = 0
+        req.on('data', (c) => {
+          size += c.length
+          if (size > limit) { reject(new Error('body too large')); req.destroy(); return }
+          chunks.push(c)
+        })
+        req.on('end', () => resolve(Buffer.concat(chunks).toString('utf8')))
+        req.on('error', reject)
+      })
+
+      const jsonRes = (res, code, obj) => {
+        try {
+          res.writeHead(code, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' })
+          res.end(JSON.stringify(obj))
+        } catch (e) { /* 连接可能已被对端关闭 */ }
+      }
+
+      webCtx.effect(() => ws.register({
+        kind: 'exact',
+        path: '/codebuddy-indicator/settings',
+        handler: (req, res) => {
+          const method = String((req && req.method) || 'GET').toUpperCase()
+          if (method === 'GET' || method === 'HEAD') {
+            try { jsonRes(res, 200, settingsView({})) }
+            catch (e) { jsonRes(res, 500, { error: String(e && e.message || e) }) }
+            return
+          }
+          if (method !== 'POST') { jsonRes(res, 405, { error: 'method not allowed' }); return }
+          readBody(req, 64 * 1024).then((text) => {
+            const parsed = parseSettingsBody(text)
+            if (!parsed.ok) { jsonRes(res, 400, { error: parsed.error }); return }
+            const body = parsed.raw
+            const incoming = parsed.value
+            // token 语义：字段缺省或空串 = 保持现值（GET 不回传明文，面板无法回填）；
+            // 显式清除用 codebuddyEnTokenClear:true。
+            const wantClear = body.codebuddyEnTokenClear === true
+            if (!incoming.codebuddyEnToken || wantClear) {
+              const cur = readBridgeSettingsFile() || defaultBridgeSettings()
+              incoming.codebuddyEnToken = wantClear ? '' : cur.codebuddyEnToken
+            }
+            const written = writeBridgeSettingsFile(incoming, {})
+            if (!written.ok) { jsonRes(res, 500, { error: written.error }); return }
+            jsonRes(res, 200, { ok: true, settings: settingsView({}) })
+          }).catch((e) => jsonRes(res, 400, { error: String(e && e.message || e) }))
+        }
+      }), 'codebuddy-indicator: settings route')
     })
   }
 }

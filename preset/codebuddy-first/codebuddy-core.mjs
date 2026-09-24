@@ -98,6 +98,22 @@ export function resolveEndpoint(explicitBaseUrl, authDomain) {
 
 export const DEFAULT_BACKEND = 'codebuddy'
 
+// 各后端的可选模型（来自两个已装 CLI `--help` 实测，v1.3.0/v1.3.1 的模型清单）：
+// 国内面（codebuddy，npm 包）与国际面（codebuddy-en / workbuddy）列表不同。
+// 设置面板据此渲染下拉候选；留空 = 各 CLI 自己的默认。
+export const BACKEND_MODEL_IDS = {
+  'codebuddy': ['hy4-preview', 'hy3', 'hy3-x', 'glm-5.3', 'glm-5.3-flash', 'glm-5.2', 'glm-5.1', 'glm-5v-turbo', 'minimax-m3', 'minimax-m2.7', 'kimi-k3-1', 'kimi-k2.7', 'kimi-k2.6', 'deepseek-v4-pro', 'deepseek-v4-flash'],
+  'codebuddy-en': ['auto', 'glm-5v-turbo', 'glm-5.1', 'glm-5.0-turbo', 'glm-5.0', 'glm-4.7', 'kimi-k2.5', 'minimax-m2.7', 'deepseek-v3-2-volc'],
+  'workbuddy': ['auto', 'glm-5v-turbo', 'glm-5.1', 'glm-5.0-turbo', 'glm-5.0', 'glm-4.7', 'kimi-k2.5', 'minimax-m2.7', 'deepseek-v3-2-volc']
+}
+
+// 各后端的用户可见名（面板下拉标签；产品面与登录域互斥，故按面分列）。
+export const BACKEND_LABELS = {
+  'codebuddy': 'CodeBuddy 国内版（npm CLI）',
+  'codebuddy-en': 'CodeBuddy 国际版（WorkBuddy AI）',
+  'workbuddy': 'WorkBuddy 国内版（桌面 CLI）'
+}
+
 // ── codebuddy-en 凭据的第三条通道：DSH 自己的凭据库 ─────────────────────────────
 //
 // 国际版 token 被桌面 App 的 protector key 封装、密钥不落盘，headless CLI 读不到；
@@ -171,6 +187,204 @@ export function resolveEnToken(settingToken) {
 /** 是否为已注册后端名。 */
 export function isBackend(v) {
   return BACKENDS.indexOf(v) >= 0
+}
+
+// ── 桥接设置文件（v1.3.2 可视化配置界面的持久层）─────────────────────────────
+// 单一事实来源：<dsh-home>/codebuddy-bridge-settings.json
+//   { "preferredBackend": "...", "defaultModel": "...",
+//     "codebuddyEnToken": "...", "endpointOverride": "...", "updatedAt": <ms> }
+// 写入方：codebuddy-indicator 的 POST /codebuddy-indicator/settings 路由（唯一写者，
+// 原子写 tmp+rename）。读取方：preset 桥接（每次读取，面板改完下一次调用即生效）、
+// 动态形态（apply 时一次）、MCP server（5s 缓存）。三种运行形态与设置面板从此一致。
+// 环境变量：DSH_HOME 定位；CODEBUDDY_SETTINGS_FILE 整体覆盖（测试注入任意路径）。
+export const SETTINGS_FILE_NAME = 'codebuddy-bridge-settings.json'
+export const SETTINGS_KEYS = ['preferredBackend', 'defaultModel', 'codebuddyEnToken', 'endpointOverride']
+
+function builtinModule(name) {
+  try {
+    const proc = globalThis.process
+    return (proc && typeof proc.getBuiltinModule === 'function') ? proc.getBuiltinModule(name) : null
+  } catch (e) { return null }
+}
+
+/** 设置文件绝对路径（定位失败 → null；CODEBUDDY_SETTINGS_FILE 优先）。 */
+export function bridgeSettingsPath() {
+  const proc = globalThis.process
+  const env = (proc && proc.env) || null
+  try {
+    if (env && env.CODEBUDDY_SETTINGS_FILE) return env.CODEBUDDY_SETTINGS_FILE
+    const nodePath = builtinModule('node:path')
+    const home = env ? (env.DSH_HOME || null) : null
+    if (nodePath && home) return nodePath.join(home, SETTINGS_FILE_NAME)
+  } catch (e) { }
+  return null
+}
+
+/**
+ * 读设置文件。文件缺失/损坏/无法定位 → null（调用方据此回退到行 config）；
+ * 读取成功 → 归一化后的完整快照（垃圾值/缺字段一律清洗为默认值，不抛错）。
+ * @param {{readFileSync?:Function, path?:string|null}} [io] 测试注入用读取替身
+ */
+export function readBridgeSettingsFile(io) {
+  const o = io || {}
+  try {
+    const nodeFs = o.readFileSync || (builtinModule('node:fs') || {}).readFileSync
+    const p = ('path' in o) ? o.path : bridgeSettingsPath()
+    if (!nodeFs || !p) return null
+    return normalizeBridgeSettings(JSON.parse(nodeFs(p, 'utf8')))
+  } catch (e) { return null }
+}
+
+/**
+ * 清洗任意来源的设置对象 → 完整快照（垃圾值/缺字段一律落默认值，不抛错）。
+ * @param {object|null} raw
+ */
+export function normalizeBridgeSettings(raw) {
+  const snap = { preferredBackend: DEFAULT_BACKEND, defaultModel: '', codebuddyEnToken: '', endpointOverride: '' }
+  if (!raw || typeof raw !== 'object') return snap
+  if (typeof raw.preferredBackend === 'string' && BACKENDS.indexOf(raw.preferredBackend) >= 0) snap.preferredBackend = raw.preferredBackend
+  if (typeof raw.defaultModel === 'string') snap.defaultModel = raw.defaultModel.trim()
+  if (typeof raw.codebuddyEnToken === 'string') snap.codebuddyEnToken = raw.codebuddyEnToken.trim()
+  if (typeof raw.endpointOverride === 'string') snap.endpointOverride = raw.endpointOverride.trim()
+  // 写入时间戳透传（面板可显示"上次保存"；非数字丢弃）。
+  if (typeof raw.updatedAt === 'number' && raw.updatedAt > 0) snap.updatedAt = raw.updatedAt
+  return snap
+}
+
+/**
+ * 从 auth 库读取某后端的登录域（auth.domain，明文；v1.3.1 实测三处均明文）。
+ * 与 preset/dynamic/MCP 形态各自的本地副本同语义；本版本供 indicator 设置路由
+ * 的诊断区使用。CODEBUDDY_AUTH_DIR 可覆盖（测试夹具）。失败返回 null。
+ * 命名注意：不叫 readAuthDomain —— 该名字已在 dynamic/host.js 的模板体内有本地
+ * 副本，而 core 是以文本注入同一函数作用域的重名函数声明会静默互相覆盖。
+ * @param {string} backend
+ * @param {{readFileSync?:Function, dir?:string}} [io]
+ */
+export function readBackendAuthDomain(backend, io) {
+  const o = io || {}
+  const id = BACKEND_AUTH_IDS[backend]
+  if (!id) return null
+  try {
+    const nodeFs = o.readFileSync || (builtinModule('node:fs') || {})
+    const read = nodeFs.readFileSync
+    if (typeof read !== 'function') return null
+    const env = (globalThis.process && globalThis.process.env) || {}
+    let dir = o.dir
+    if (!dir) {
+      const nodePath = builtinModule('node:path')
+      dir = env.CODEBUDDY_AUTH_DIR ||
+        (nodePath ? nodePath.join(env.LOCALAPPDATA || 'C:\\Users\\lcl\\AppData\\Local', 'CodeBuddyExtension', 'Data', 'Public', 'auth')
+          : (env.LOCALAPPDATA || 'C:\\Users\\lcl\\AppData\\Local') + '\\CodeBuddyExtension\\Data\\Public\\auth')
+    }
+    const sep = dir.indexOf('\\') >= 0 ? '\\' : '/'
+    const raw = JSON.parse(read(dir + sep + id + '.info', 'utf8'))
+    const d = raw && raw.auth && raw.auth.domain
+    return typeof d === 'string' && d.trim() ? d.trim() : null
+  } catch (e) { return null }
+}
+
+/**
+ * 后端设置元数据（可视化配置界面渲染用）：候选模型、可见名、product 端点、
+ * 凭据是否必需。纯数据 + 只读环境，不触发任何 IO。
+ */
+export function backendSettingsMeta(backend) {
+  return {
+    id: backend,
+    label: BACKEND_LABELS[backend] || backend,
+    models: BACKEND_MODEL_IDS[backend] || [],
+    productEndpoint: BACKEND_ENDPOINTS[backend] || null,
+    needsToken: backend === 'codebuddy-en'
+  }
+}
+
+/** 全后端元数据（面板渲染下拉与提示用）。 */
+export function allBackendSettingsMeta() {
+  return BACKENDS.map(backendSettingsMeta)
+}
+
+/**
+ * 诊断一个后端的当前有效配置（不落盘、不联网，纯推导）：
+ * 登录域、生效端点、凭据来源、端点/登录域是否一致、下一步可操作提示。
+ * @param {string} backend
+ * @param {object} settings 已清洗的完整设置快照
+ * @param {{readFileSync?:Function,dir?:string,env?:object}} [io] 测试注入
+ * @returns {{backend:string,authDomain:string|null,endpoint:string|null,endpointSource:string,
+ *            tokenSource:string|null,tokenHint:string,mismatch:boolean,defaultModel:string}}
+ */
+export function diagnoseBackend(backend, settings, io) {
+  const o = io || {}
+  const env = o.env || (globalThis.process && globalThis.process.env) || {}
+  const s = settings || defaultBridgeSettings()
+  const authDomain = readBackendAuthDomain(backend, o)
+  const override = String(s.endpointOverride || '').trim()
+  const byDomain = resolveEndpoint(null, authDomain)
+  const endpoint = override || byDomain || BACKEND_ENDPOINTS[backend] || null
+  const endpointSource = override ? 'override' : (byDomain ? 'auth-domain' : 'product')
+  const tok = resolveEnToken(backend === 'codebuddy-en' ? s.codebuddyEnToken : null)
+  return {
+    backend: backend,
+    authDomain: authDomain,
+    endpoint: endpoint,
+    endpointSource: endpointSource,
+    tokenSource: backend === 'codebuddy-en' ? tok.source : 'not-needed',
+    tokenHint: tok.source === 'setting' ? '来自设置面板'
+      : tok.source === 'env' ? '来自环境变量 CODEBUDDY_AUTH_TOKEN'
+        : tok.source === 'dsh-store' ? '来自 DSH 凭据库（自动复用 WORKBUDDY_TOKEN）'
+          : backend === 'codebuddy-en' ? '缺失：国际版 token 不落盘，需在设置面板填写或先在 DSH 配 workbuddy provider'
+            : '无需填写（国内版由 CLI 自行登录）',
+    mismatch: endpointMismatchHint(backend, authDomain, !!tok.token) !== null,
+    hint: endpointMismatchHint(backend, authDomain, !!tok.token) || null,
+    defaultModel: String(s.defaultModel || '').trim() || '(CLI 默认)'
+  }
+}
+
+/** 默认设置快照（设置文件与行 config 都不可用时的最终回退）。 */
+export function defaultBridgeSettings() {
+  return normalizeBridgeSettings(null)
+}
+
+/** 面板 POST 的原始 JSON → 完整快照（只接受四个已知字段，全清洗）。 */
+export function sanitizeBridgeSettings(raw) {
+  if (!raw || typeof raw !== 'object') return null
+  const picked = {}
+  for (const k of SETTINGS_KEYS) if (raw[k] !== undefined) picked[k] = raw[k]
+  return normalizeBridgeSettings(picked)
+}
+
+/**
+ * 原子写设置文件（tmp + rename；目录不存在则创建）。
+ * 仅 host 半（codebuddy-indicator 路由）调用 —— 单一写者。
+ * @param {object} value 已清洗的完整快照
+ * @param {{writeFileSync?:Function, renameSync?:Function, mkdirSync?:Function, path?:string|null}} [io] 测试注入
+ * @returns {{ok:boolean, path?:string, error?:string}}
+ */
+export function writeBridgeSettingsFile(value, io) {
+  const o = io || {}
+  const snap = normalizeBridgeSettings(value)
+  snap.updatedAt = Date.now()
+  const p = ('path' in o) ? o.path : bridgeSettingsPath()
+  if (!p) return { ok: false, error: 'dsh-home not resolved (set DSH_HOME or CODEBUDDY_SETTINGS_FILE)' }
+  const nodeFs = o.writeFileSync ? { writeFileSync: o.writeFileSync, renameSync: o.renameSync, mkdirSync: o.mkdirSync, rmSync: o.rmSync } : builtinModule('node:fs')
+  if (!nodeFs || typeof nodeFs.writeFileSync !== 'function') return { ok: false, error: 'fs unavailable' }
+  try {
+    const nodePath = builtinModule('node:path')
+    const dir = nodePath ? nodePath.dirname(p) : p.replace(/[\\/][^\\/]+$/, '')
+    if (dir && typeof nodeFs.mkdirSync === 'function') { try { nodeFs.mkdirSync(dir, { recursive: true }) } catch (e) { } }
+    const text = JSON.stringify(snap, null, 2)
+    if (typeof nodeFs.renameSync === 'function') {
+      const tmp = p + '.' + ((globalThis.process && globalThis.process.pid) || 0) + '.tmp'
+      try {
+        nodeFs.writeFileSync(tmp, text, 'utf8')
+        nodeFs.renameSync(tmp, p)
+      } catch (e) {
+        try { if (typeof nodeFs.rmSync === 'function') nodeFs.rmSync(tmp, { force: true }) } catch (e2) { }
+        throw e
+      }
+    } else {
+      nodeFs.writeFileSync(p, text, 'utf8')
+    }
+    return { ok: true, path: p }
+  } catch (e) { return { ok: false, error: String((e && e.message) || e) } }
 }
 
 /**

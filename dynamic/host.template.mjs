@@ -11,32 +11,11 @@
 
 const CWD_FALLBACK = 'C:\\Users\\lcl\\Desktop\\codebuddy-bridge'
 
-// 设置读数（动态形态无 Config 声明面）：从 dsh-home 根的 codebuddy-bridge-settings.json
-// 读取（与 preset 设置面板、MCP 形态共享同一份用户偏好；见 preset 桥接层头注）。
-// 动态插件是进程内临时的 —— apply 时读一次即可，无需 watch。
-// 沙箱约束：new Function 求值 → 不可用 import.meta；dsh-home 定位退化为
-// DSH_HOME 环境变量（动态形态宿主进程里有 process），都没有则用默认值。
-const SETTINGS_FILE = 'codebuddy-bridge-settings.json'
-
-function readBridgeSettings() {
-  const snap = { preferredBackend: DEFAULT_BACKEND, defaultModel: '', codebuddyEnToken: '', endpointOverride: '' }
-  try {
-    const proc = globalThis.process
-    const nodeFs = (proc && typeof proc.getBuiltinModule === 'function') ? proc.getBuiltinModule('node:fs') : null
-    const nodePath = (proc && typeof proc.getBuiltinModule === 'function') ? proc.getBuiltinModule('node:path') : null
-    const home = (proc && proc.env && proc.env.DSH_HOME) || null
-    if (nodeFs && nodePath && home) {
-      const raw = JSON.parse(nodeFs.readFileSync(nodePath.join(home, SETTINGS_FILE), 'utf8'))
-      if (raw && typeof raw === 'object') {
-        if (typeof raw.preferredBackend === 'string' && BACKENDS.indexOf(raw.preferredBackend) >= 0) snap.preferredBackend = raw.preferredBackend
-        if (typeof raw.defaultModel === 'string') snap.defaultModel = raw.defaultModel.trim()
-        if (typeof raw.codebuddyEnToken === 'string') snap.codebuddyEnToken = raw.codebuddyEnToken.trim()
-        if (typeof raw.endpointOverride === 'string') snap.endpointOverride = raw.endpointOverride.trim()
-      }
-    }
-  } catch (e) { /* 无设置文件/无 fs：默认值 */ }
-  return snap
-}
+// 设置读数（动态形态无 Config 声明面）：v1.3.2 起统一走 core 的 readBridgeSettingsFile
+// （与 preset 设置面板写入的 dsh-home/codebuddy-bridge-settings.json 同一份、同一实现）。
+// 返回 null = 文件缺失/无法定位 → 用 defaultBridgeSettings()。
+// 沙箱约束：new Function 求值 → 不可用 import.meta；dsh-home 定位靠 DSH_HOME。
+const applySettings = readBridgeSettingsFile() || defaultBridgeSettings()
 
 // 登录域读取（v1.3.1）：端点必须与登录域一致，否则 CLI 报 401。auth 库的
 // auth.domain 是明文，无需解密 token。位置：
@@ -66,9 +45,6 @@ return {
     const subprocess = ctx.subprocess
     const planMode = ctx.get('planMode')
     const sandboxPolicy = ctx.get('sandboxPolicy')
-
-    // 设置快照（apply 时读一次；动态形态生命周期短，无需 watch）。
-    const settings = readBridgeSettings()
 
     // 动态沙箱无 ctx.emit：状态变化推给家级收集器（codebuddy-indicator 提供
     // codebuddyCollector 服务），由其 /codebuddy-indicator/status 路由统一暴露。
@@ -124,12 +100,14 @@ return {
       },
       planActiveFor: planActiveFor,
       defaultMode: 'auto',
-      getPreferredBackend: function () { return settings.preferredBackend },
-      getDefaultModel: function () { return settings.defaultModel },
+      // v1.3.2 可视化配置界面：getter 每次现读设置文件（面板经 POST 写入），缺失
+      // 才回退 apply 时快照 —— 面板保存即时生效，无需重载插件。
+      getPreferredBackend: function () { const f = readBridgeSettingsFile(); return f ? f.preferredBackend : applySettings.preferredBackend },
+      getDefaultModel: function () { const f = readBridgeSettingsFile(); return f ? f.defaultModel : applySettings.defaultModel },
       // 端点/凭据（v1.3.1）：端点覆盖 > 登录域推导；凭据仅 codebuddy-en 需要。
-      getEndpointOverride: function () { return settings.endpointOverride },
+      getEndpointOverride: function () { const f = readBridgeSettingsFile(); return f ? f.endpointOverride : applySettings.endpointOverride },
       getAuthDomain: function (backend) { return readAuthDomain(backend) },
-      getAuthToken: function (backend) { return backend === 'codebuddy-en' ? settings.codebuddyEnToken : null }
+      getAuthToken: function (backend) { const f = readBridgeSettingsFile(); return backend === 'codebuddy-en' ? (f ? f.codebuddyEnToken : applySettings.codebuddyEnToken) : null }
     })
     const coreExecute = runner.coreExecute
 
