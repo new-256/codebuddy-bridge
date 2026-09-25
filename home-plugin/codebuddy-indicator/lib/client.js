@@ -87,6 +87,12 @@ window.__ModuleLoader__.load({
       ".cbs-diag-row:last-child{border-bottom:none}",
       ".cbs-diag-name{font-weight:600}",
       ".cbs-diag-mono{font-family:Consolas,Menlo,monospace;font-size:11px;color:var(--dsw-alias-label-secondary);word-break:break-all}",
+      ".cbs-rates{margin-top:6px;display:flex;flex-direction:column;gap:3px}",
+      ".cbs-rate-row{display:flex;gap:6px;align-items:baseline;font-size:11px;line-height:1.5}",
+      ".cbs-rate-tag{flex:none;font-family:Consolas,Menlo,monospace;padding:0 5px;border-radius:4px;background:var(--dsw-alias-bg-layer-2);color:var(--dsw-alias-label-secondary)}",
+      ".cbs-rate-free{color:var(--dsw-static-green-500,#22c55e);border:1px solid var(--dsw-static-green-500,#22c55e)}",
+      ".cbs-rate-unknown{color:var(--dsw-alias-label-tertiary,var(--dsw-alias-label-secondary));border:1px dashed var(--dsw-alias-border-l1)}",
+      ".cbs-rate-ids{font-family:Consolas,Menlo,monospace;color:var(--dsw-alias-label-secondary);word-break:break-all}",
       ".cbs-badge{display:inline-flex;align-items:center;gap:4px;height:18px;padding:0 7px;border-radius:9px;font-size:11px;white-space:nowrap}",
       ".cbs-badge-ok{color:var(--dsw-static-green-500,#22c55e);border:1px solid var(--dsw-static-green-500,#22c55e)}",
       ".cbs-badge-warn{color:var(--dsw-alias-state-warn-primary);border:1px solid var(--dsw-alias-state-warn-primary)}",
@@ -384,6 +390,14 @@ window.__ModuleLoader__.load({
       const beList = Array.isArray(view.backends) ? view.backends : [];
       const cur = beList.filter(function (b) { return b.id === form.preferredBackend })[0];
       const models = (cur && Array.isArray(cur.models)) ? cur.models : [];
+      // v1.5.0：带倍率的候选。优先用 modelOptions（含 label/credits/free）；
+      // 旧版后端不返回时退化为纯 id 列表，保证向前兼容。
+      const opts = (cur && Array.isArray(cur.modelOptions) && cur.modelOptions.length)
+        ? cur.modelOptions
+        : models.map(function (m) { return { id: m, label: m, credits: null, free: false, hasCredits: false }; });
+      const freeOnes = opts.filter(function (o) { return o.free; });
+      const priced = opts.filter(function (o) { return o.hasCredits && !o.free; });
+      const unknown = opts.filter(function (o) { return !o.hasCredits; });
       return react.createElement("div", { className: "cbs-root" },
         react.createElement("div", null,
           react.createElement("div", { className: "cbs-h" }, "CodeBuddy 桥接"),
@@ -400,8 +414,24 @@ window.__ModuleLoader__.load({
             react.createElement("label", { className: "cbs-label", htmlFor: "cbs-model" }, "默认模型"),
             react.createElement("div", { className: "cbs-ctl" },
               react.createElement("input", { id: "cbs-model", className: "cbs-input", list: "cbs-model-list", value: form.defaultModel, onChange: setField("defaultModel"), placeholder: "留空 = 各 CLI 自身默认", spellCheck: false }),
-              react.createElement("datalist", { id: "cbs-model-list" }, models.map(function (m) { return react.createElement("option", { key: m, value: m }); })),
-              react.createElement("div", { className: "cbs-note" }, "候选来自该后端自己的模型目录（桌面版严格以自己安装为准，npm 面另有账号实测清单）；型号先看产品面是否提供，再看账号是否授权。也可手输任意 CLI 支持的模型 id。")),
+              react.createElement("datalist", { id: "cbs-model-list" }, opts.map(function (o) { return react.createElement("option", { key: o.id, value: o.id, label: o.label }); })),
+              react.createElement("div", { className: "cbs-note" }, "候选来自该后端自己的模型目录（桌面版严格以自己安装为准，npm 面另有账号实测清单）；型号先看产品面是否提供，再看账号是否授权。也可手输任意 CLI 支持的模型 id。"),
+              // v1.5.0：倍率一览 —— 让用户能精确判断成本。倍率随 CLI 描述文件实时同步。
+              opts.length ? react.createElement("div", { className: "cbs-rates" },
+                freeOnes.length ? react.createElement("div", { className: "cbs-rate-row" },
+                  react.createElement("span", { className: "cbs-rate-tag cbs-rate-free" }, "免费 ×" + freeOnes.length),
+                  react.createElement("span", { className: "cbs-rate-ids" }, freeOnes.map(function (o) { return o.id; }).join("、")),
+                ) : null,
+                priced.length ? react.createElement("div", { className: "cbs-rate-row" },
+                  react.createElement("span", { className: "cbs-rate-tag" }, "计费"),
+                  react.createElement("span", { className: "cbs-rate-ids" }, priced.map(function (o) { return o.label; }).join("、")),
+                ) : null,
+                unknown.length ? react.createElement("div", { className: "cbs-rate-row" },
+                  react.createElement("span", { className: "cbs-rate-tag cbs-rate-unknown" }, "未标倍率"),
+                  react.createElement("span", { className: "cbs-rate-ids" }, unknown.map(function (o) { return o.id; }).join("、")),
+                ) : null,
+              ) : null,
+              react.createElement("div", { className: "cbs-note" }, "倍率取自该 CLI 的 product 描述文件（credits 字段），随 CLI 升级自动同步；倍率为消费系数，x0.00 即免费。未标倍率的型号表示该安装未提供该数据，不代表免费。")),
             react.createElement("label", { className: "cbs-label", htmlFor: "cbs-endpoint" }, "端点覆盖"),
             react.createElement("div", { className: "cbs-ctl" },
               react.createElement("input", { id: "cbs-endpoint", className: "cbs-input", value: form.endpointOverride, onChange: setField("endpointOverride"), placeholder: "留空 = 按登录域自动推导（推荐）", spellCheck: false }),

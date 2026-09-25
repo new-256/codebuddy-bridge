@@ -14,6 +14,8 @@ import {
   endpointMismatchHint, endpointHost, BACKEND_ENDPOINTS, AUTH_DOMAIN_ENDPOINTS, BACKEND_AUTH_IDS,
   BACKEND_LABELS, BACKEND_ALIASES,
   extractModelIds, readBackendModelCatalog, backendModelCatalog, parseAccountModels, BACKEND_MODEL_IDS,
+  parseCreditValue, extractModelCredits, formatCreditLabel, modelCatalogDetailed, formatModelCatalogText,
+  backendSettingsMeta,
   resolveEnToken, readDshWorkbuddyToken
 } from '../core/codebuddy-core.mjs'
 
@@ -581,6 +583,107 @@ test('backendModelCatalog：桌面版严格只认自己安装的目录，不并�
   const npmIds = backendModelCatalog('codebuddy', extra)
   assert.equal(npmIds[0], 'hy4-preview', 'npm 面静态表在前')
   assert.ok(npmIds.includes('brand-new'), 'npm 面并入文件里多出的 id')
+})
+
+test('parseCreditValue：只认 x<数字>，缺失/空串一律 null（0 与「未知」不可混淆）', () => {
+  assert.equal(parseCreditValue('x0.29 credits'), 0.29)
+  assert.equal(parseCreditValue('x0.00 credits'), 0, 'x0.00 必须解析为数字 0（= 免费）')
+  assert.equal(parseCreditValue('x0.00'), 0, '省略 credits 后缀也要认')
+  assert.equal(parseCreditValue('x3.31 credits'), 3.31, '倍率可大于 1')
+  assert.equal(parseCreditValue('X0.5 credits'), 0.5, '大写 X 也认')
+  assert.equal(parseCreditValue(''), null, '空串 → null（未知，不是免费）')
+  assert.equal(parseCreditValue('  '), null)
+  assert.equal(parseCreditValue(undefined), null)
+  assert.equal(parseCreditValue('0.29'), null, '缺 x 前缀不认')
+  assert.equal(parseCreditValue('x —'), null, '占位符不认')
+})
+
+test('extractModelCredits：从顶层 models 建 id→倍率 映射，无数据返回 null', () => {
+  const doc = JSON.stringify({
+    agents: [{ name: 'cli', models: ['hy3', 'glm-5.3'] }],
+    models: [
+      { id: 'hy3', credits: 'x0.00 credits' },
+      { id: 'glm-5.3', credits: 'x0.79 credits' },
+      { id: 'default-model', credits: '' }
+    ]
+  })
+  const map = extractModelCredits(doc)
+  assert.equal(map.get('hy3'), 0)
+  assert.equal(map.get('glm-5.3'), 0.79)
+  assert.ok(!map.has('default-model'), '空 credits 的条目不进映射')
+  assert.equal(extractModelCredits('{"models":[]}'), null, '无有效倍率 → null')
+  assert.equal(extractModelCredits('not json'), null, '坏 JSON → null')
+  assert.equal(extractModelCredits({}), null)
+})
+
+test('formatCreditLabel：0 → 免费，其余两位小数，null → 空', () => {
+  assert.equal(formatCreditLabel(0), '免费')
+  assert.equal(formatCreditLabel(0.29), 'x0.29')
+  assert.equal(formatCreditLabel(3.31), 'x3.31')
+  assert.equal(formatCreditLabel(1.2), 'x1.20', '补零便于竖排对齐')
+  assert.equal(formatCreditLabel(null), '')
+  assert.equal(formatCreditLabel(undefined), '')
+})
+
+test('modelCatalogDetailed：挂倍率、免费优先在前、无数据殿后（v1.5.0）', () => {
+  const doc = JSON.stringify({
+    models: [
+      { id: 'hy3', credits: 'x0.00 credits' },
+      { id: 'glm-5.3', credits: 'x0.79 credits' },
+      { id: 'cheap', credits: 'x0.06 credits' },
+      { id: 'no-credit', credits: '' }
+    ]
+  })
+  const io = { readFileSync: () => doc }
+  const items = modelCatalogDetailed('codebuddy', io)
+  const byId = Object.fromEntries(items.map((x) => [x.id, x]))
+  assert.equal(byId['hy3'].free, true)
+  assert.equal(byId['hy3'].label, 'hy3 · 免费')
+  assert.equal(byId['glm-5.3'].label, 'glm-5.3 · x0.79')
+  assert.equal(byId['glm-5.3'].free, false)
+  assert.equal(byId['no-credit'].hasCredits, false)
+  assert.equal(byId['no-credit'].label, 'no-credit', '无倍率时不挂后缀')
+  // 免费/低价在前
+  assert.equal(items[0].credits, 0, '免费排最前')
+  const pricedIdx = items.map((x, i) => [x, i]).filter(([x]) => x.hasCredits)
+  for (let i = 1; i < pricedIdx.length; i++) {
+    assert.ok(pricedIdx[i - 1][0].credits <= pricedIdx[i][0].credits, '有倍率的按升序')
+  }
+  // 无数据殿后
+  const firstNoCredit = items.findIndex((x) => !x.hasCredits)
+  if (firstNoCredit >= 0) {
+    assert.ok(items.slice(firstNoCredit).every((x) => !x.hasCredits), '无数据的全部殿后')
+  }
+})
+
+test('modelCatalogDetailed：倍率随 CLI 描述文件实时同步（改文件即变，无需改插件）', () => {
+  const v1 = { readFileSync: () => JSON.stringify({ models: [{ id: 'hy3', credits: 'x0.00 credits' }] }) }
+  const v2 = { readFileSync: () => JSON.stringify({ models: [{ id: 'hy3', credits: 'x0.12 credits' }] }) }
+  assert.equal(modelCatalogDetailed('codebuddy', v1).find((x) => x.id === 'hy3').label, 'hy3 · 免费')
+  assert.equal(modelCatalogDetailed('codebuddy', v2).find((x) => x.id === 'hy3').label, 'hy3 · x0.12',
+    'CLI 升级改了 credits 后，标签应直接跟着变')
+})
+
+test('backendSettingsMeta 带 modelOptions（含 label），models 仍为纯 id 数组', () => {
+  const doc = JSON.stringify({
+    models: [{ id: 'hy3', credits: 'x0.00 credits' }, { id: 'glm-5.3', credits: 'x0.79 credits' }]
+  })
+  const io = { readFileSync: () => doc }
+  const meta = backendSettingsMeta('codebuddy', io)
+  assert.ok(Array.isArray(meta.modelOptions) && meta.modelOptions.length, '应有 modelOptions')
+  const hy3 = meta.modelOptions.find((x) => x.id === 'hy3')
+  assert.equal(hy3.label, 'hy3 · 免费')
+  assert.equal(hy3.credits, 0)
+  assert.equal(hy3.free, true)
+  assert.ok(meta.models.every((m) => typeof m === 'string'), 'models 保持纯字符串数组（向后兼容）')
+  assert.deepEqual(meta.models, meta.modelOptions.map((x) => x.id))
+})
+
+test('formatModelCatalogText：输出 id · 倍率 的紧凑文本', () => {
+  const doc = JSON.stringify({ models: [{ id: 'hy3', credits: 'x0.00 credits' }, { id: 'glm-5.3', credits: 'x0.79 credits' }] })
+  const t = formatModelCatalogText('codebuddy', { readFileSync: () => doc })
+  assert.ok(t.includes('hy3 · 免费'), t)
+  assert.ok(t.includes('glm-5.3 · x0.79'), t)
 })
 
 test('免费模型归属：hy3 / deepseek-v4.1-flash 属 npm 面，不在 WorkBuddyAI 目录', () => {

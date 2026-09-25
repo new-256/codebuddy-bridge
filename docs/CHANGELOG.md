@@ -2,6 +2,37 @@
 
 本项目遵循 [语义化版本](https://semver.org/)；版本号同步 `package.json`、Git tag 与 GitHub Release（`npm run check` 中的 `scripts/verify.mjs` 在 CI 里锁三处一致）。
 
+## [1.5.0] - 2026-09-25
+
+**每个模型后面挂上倍率**。用户要求：「在模型后方都挂上倍率，并且能够根据 cli 同步更新，让用户能够精确判断」。
+
+### 倍率从哪来
+
+查证 CLI 侧：`--help` 只印 id、**没有任何列出倍率的子命令**；而每个安装的 `product.json` **顶层** `models[]` 里带 `credits` 字段，就是界面那个 `0.00x`：
+
+```json
+{ "id": "hy3", "credits": "x0.00 credits" }
+{ "id": "glm-5.3", "credits": "x0.79 credits" }
+```
+
+注意 `agents.cli.models` 只是**字符串数组、不带倍率**，所以必须读顶层 `models[]`。三种安装字段形态一致（`x0.29 credits` / 偶尔省略后缀的 `x0.00` / 空串），国内桌面版有 39 项没有该字段。
+
+### 改了什么
+
+- **新增 `extractModelCredits()` / `parseCreditValue()`**：只认 `x<数字>` 前缀，其余一律 `null`。**关键设计：`0` 与「未知」严格区分** —— `x0.00` 解析为数字 `0`（免费），空串/缺失为 `null`（未标倍率）。绝不把缺失猜成 0，否则用户会把「厂商没标」误读成「免费」。
+- **新增 `modelCatalogDetailed(backend, io)`**：返回 `{id, credits, free, label, hasCredits}`，`label` 形如 `hy3 · 免费` / `glm-5.3 · x0.79`；无倍率数据时不挂后缀。**排序：有倍率的在前并按升序**（免费自然浮到最前），无数据的稳定殿后。
+- **新增 `formatCreditLabel()`**：`0 → 免费`，其余统一两位小数（`x1.20`）便于竖排对齐。
+- **`backendSettingsMeta()` 增补 `modelOptions`**（带 label/credits/free），`models` 仍保持纯 id 数组以向后兼容；`modelCatalogDetailed` 支持 `io` 注入，沿用既有的纯函数约定（**不联网、不 spawn**）。
+- **面板**：输入框 `datalist` 改用 `label`，并在下方新增**倍率一览**——分「免费 ×N」「计费」「未标倍率」三行渲染，附说明「倍率取自该 CLI 的 product 描述文件，随 CLI 升级自动同步」。
+- **同步方式**：与 id 同源，都读该后端自己的 product 描述文件，**运行时读取**——用户升级 CLI 后重启即自动更新，无需改插件。
+- **policy 与六处 schema 描述**加入成本指引（`x0.00` 即免费；优先选够用的最便宜型号）。
+
+### 顺带修掉一个反复踩的坑
+
+单引号 JS 字符串里写英文所有格（`id's`、`machine's`）会把字符串提前截断，报 `SyntaxError: Unexpected identifier 's'`。这个坑在 v1.4.1、v1.4.2、v1.5.0 **各踩过一次**，每次都要靠人肉看生成物的报错才发现。现在 `test/build-sync.test.mjs` 里加了一道**引号状态机守卫**：逐行扫描，只在「单引号字符串内部又出现 撇号+字母」时报警（双引号串里的 `session's` 合法，不误报），并直接指出文件与行号。
+
+测试 136→144。
+
 ## [1.4.2] - 2026-09-25
 
 **「哪个产品面提供哪些模型」搞清楚了**。用户反馈：WorkBuddy 国际版界面上明明有 `Hy4 preview` / `Hy3` / `Deepseek-V4.1-Flash` 三个 **Free now（0.00x）** 模型，列表里却看不到。

@@ -248,6 +248,59 @@ export function extractModelIds(productJson) {
 }
 
 /**
+ * 从 product 描述文件里解析**每个模型的倍率**（credits 字段）。
+ *
+ * 真机实测字段形态（三种安装一致）：
+ *   "credits": "x0.29 credits"   ← 常见形态
+ *   "credits": "x0.00"           ← 偶尔省略 " credits" 后缀
+ *   "credits": ""                ← 缺失/空串（如 npm 的 default-model、国内版 39 项）
+ * 因此只认 `x<数字>` 前缀，其余一律视为**无倍率数据**（返回 null），
+ * 绝不猜 0 —— 0 表示「免费」，与「未知」是两回事，混淆会让用户误判成本。
+ *
+ * @returns {Map<string, number>|null} id → 倍率（数字）。无任何倍率数据时返回 null。
+ */
+export function extractModelCredits(productJson) {
+  try {
+    const obj = typeof productJson === 'string' ? JSON.parse(productJson) : productJson
+    if (!obj || typeof obj !== 'object' || !Array.isArray(obj.models)) return null
+    const map = new Map()
+    for (const m of obj.models) {
+      if (!m || typeof m !== 'object') continue
+      const id = typeof m.id === 'string' ? m.id.trim() : ''
+      if (!id) continue
+      const n = parseCreditValue(m.credits)
+      if (n !== null) map.set(id, n)
+    }
+    return map.size ? map : null
+  } catch (e) { return null }
+}
+
+/**
+ * 解析单个倍率字符串。`"x0.29 credits"` → 0.29；`"x0.00"` → 0；无效/空 → null。
+ * 兼容全角 x/大写 X，以及小数点前后无数字的写法。
+ */
+export function parseCreditValue(raw) {
+  if (typeof raw !== 'string') return null
+  const m = raw.trim().match(/^[xX×]\s*([0-9]+(?:\.[0-9]+)?)/)
+  if (!m) return null
+  const n = Number(m[1])
+  return Number.isFinite(n) ? n : null
+}
+
+/**
+ * 把倍率格式化成面板/描述里挂的短标签。
+ *   0      → '免费'
+ *   0.29   → 'x0.29'
+ *   1.2    → 'x1.20'（统一两位小数，便于竖排对齐）
+ *   null   → ''（无数据，调用方直接不挂）
+ */
+export function formatCreditLabel(credits) {
+  if (typeof credits !== 'number' || !Number.isFinite(credits)) return ''
+  if (credits === 0) return '免费'
+  return `x${credits.toFixed(2)}`
+}
+
+/**
  * 某后端的模型候选清单（面板下拉用）。
  *
  * **优先级（v1.4.1 修正）**：内置静态表（= 真机按账号实测的可用清单）**为主**，
@@ -315,6 +368,65 @@ export function parseAccountModels(text) {
     if (!ids.includes(m[1])) ids.push(m[1])
   }
   return ids.length ? ids : null
+}
+
+/**
+ * 某后端模型候选的**详细清单**：每个模型带上倍率与展示标签（v1.5.0）。
+ *
+ * 倍率来源与 id 来源同源 —— 都读该后端自己的 product 描述文件，所以**用户升级
+ * CLI 后重启即自动同步**，无需改插件。倍率取自顶层 `models[].credits`
+ * （`agents.cli.models` 只是字符串数组，不带倍率，故必须读顶层）。
+ *
+ * 返回项：
+ *   { id, credits, free, label, hasCredits }
+ *   label = `id · 免费` 或 `id · x0.29`；无倍率数据时不挂后缀（只留 id）。
+ * 排序：**有倍率数据的在前并按倍率升序**（用户一眼看出哪个便宜），无数据的殿后
+ * 且保持原有相对顺序（稳定排序）。这样「免费」的模型总是排在最前面。
+ *
+ * 永不抛错；读不到文件时全部项 hasCredits=false，仍返回完整 id 列表。
+ * @param {string} backend
+ * @param {{readFileSync?:Function}} [io] 测试注入
+ * @returns {Array<{id:string,credits:number|null,free:boolean,label:string,hasCredits:boolean}>}
+ */
+export function modelCatalogDetailed(backend, io) {
+  const ids = backendModelCatalog(backend, io)
+  const read = (io && io.readFileSync) || ((p, enc) => {
+    const proc = globalThis.process
+    const fs = (proc && typeof proc.getBuiltinModule === 'function') ? proc.getBuiltinModule('fs') : null
+    if (!fs) throw new Error('no fs')
+    return fs.readFileSync(p, enc)
+  })
+  let creditsMap = null
+  for (const p of productDescriptorCandidates(backend)) {
+    try {
+      const map = extractModelCredits(read(p, 'utf8'))
+      if (map) { creditsMap = map; break }
+    } catch (e) { /* 下一个候选 */ }
+  }
+  const items = ids.map((id) => {
+    const credits = creditsMap && creditsMap.has(id) ? creditsMap.get(id) : null
+    const hasCredits = typeof credits === 'number'
+    const suffix = formatCreditLabel(credits)
+    return {
+      id,
+      credits,
+      free: hasCredits && credits === 0,
+      hasCredits,
+      label: suffix ? `${id} · ${suffix}` : id
+    }
+  })
+  // 有倍率在前 + 倍率升序；无倍率的稳定殿后
+  const withC = items.filter((x) => x.hasCredits).sort((a, b) => a.credits - b.credits)
+  const withoutC = items.filter((x) => !x.hasCredits)
+  return [...withC, ...withoutC]
+}
+
+/**
+ * 详细清单的紧凑文本形式，供工具描述/提示词挂载（`id · 倍率` 逗号分隔）。
+ * 倍率数据缺失时退化为纯 id 列表。
+ */
+export function formatModelCatalogText(backend, io) {
+  return modelCatalogDetailed(backend, io).map((x) => x.label).join(', ')
 }
 
 // 各后端的用户可见名（面板下拉标签；产品面与登录域互斥，故按面分列）。
@@ -528,10 +640,13 @@ export function readBackendAuthDomain(backend, io) {
  * 凭据是否必需。纯数据 + 只读环境，不触发任何 IO。
  */
 export function backendSettingsMeta(backend, io) {
+  const detailed = modelCatalogDetailed(backend, io)
   return {
     id: backend,
     label: BACKEND_LABELS[backend] || backend,
-    models: backendModelCatalog(backend, io),
+    models: detailed.map((x) => x.id),
+    // v1.5.0：带倍率的详细清单，面板下拉直接渲染 x.label（`id · 免费` / `id · x0.29`）
+    modelOptions: detailed.map((x) => ({ id: x.id, label: x.label, credits: x.credits, free: x.free, hasCredits: x.hasCredits })),
     productEndpoint: BACKEND_ENDPOINTS[backend] || null,
     needsToken: backend === 'codebuddy-en'
   }
@@ -1207,7 +1322,7 @@ export const POLICY_TEXT = [
   '',
   'Fallback protocol: when codebuddy is rate-limited or the network is down, codebuddy_run/codebuddy_continue automatically pop a confirmation dialog asking the user whether to use the DSH local API config. If the returned result has fallback=true (status FALLBACK_TO_DSH), the user chose to fall back: complete the task with native DSH tools / the local model and DO NOT call codebuddy again for this task. If ok=false without fallback, report the codebuddy error. Never loop codebuddy calls; never ask codebuddy to call back into DSH.',
   '',
-  'Model selection: codebuddy_run takes an optional model. When unspecified, the CLI default applies unless the user set a preferred default model in the plugin settings (then that is injected automatically per call). Which models exist depends on WHICH PRODUCT FACE supplies them, so do not treat the four backends as one pool: "codebuddy" and "codebuddy-intl" are the npm CLI and offer its catalogue - including the free tier (hy3 and deepseek-v4.1-flash cost x0.00 credits; hy4-preview costs x0.29 but is frequently free on promotional accounts); "codebuddy-en" (WorkBuddyAI) has its OWN catalogue which does NOT contain hy4-preview or deepseek-v4.1-flash - it offers hy3 (free), gpt-5.1-codex-mini, gemini-3.1-flash-lite, gemini-2.5-flash, minimax-m3, gemini-3.0-flash, deepseek-v3-2-volc, kimi-k2.5/2.6, glm-5.0/5.2/5.3, gpt-5.3-codex, gpt-5.4/5.5, gpt-5.6-sol/terra/luna and the role aliases (fast/balanced/primary/deep-model); "workbuddy" (domestic desktop) has a further catalogue (auto, hy4-preview, hy3, deepseek-v4.1-flash, glm-5.x, kimi-k2.6/2.7/2.8-preview/k3-1, minimax-m3/m2.7, deepseek-v4-pro). Within a face availability is still gated per ACCOUNT: an id outside the account catalogue fails with "400 model [...] service info not found", and one inside it but unlicensed fails with "400 model [...] is only available for authorized users". International ids (claude-sonnet-5, claude-opus-5, gemini-3.1-pro, ...) are per-account gated and return the latter for a domestic account. To get the exact live list for a CLI, run it with a deliberately invalid model id - the reply prints "Currently supported models for your account:" followed by one "- <id>" per line (core exposes parseAccountModels for this). Pass a model only when the task clearly benefits from a specific one; the default is usually right. Optional effort: minimal/low/medium/high/xhigh/max. Optional maxTurns caps agentic turns (default unlimited).',
+  'Model selection: codebuddy_run takes an optional model. When unspecified, the CLI default applies unless the user set a preferred default model in the plugin settings (then that is injected automatically per call). Which models exist depends on WHICH PRODUCT FACE supplies them, so do not treat the four backends as one pool: "codebuddy" and "codebuddy-intl" are the npm CLI and offer its catalogue - including the free tier (hy3 and deepseek-v4.1-flash cost x0.00 credits; hy4-preview costs x0.29 but is frequently free on promotional accounts); "codebuddy-en" (WorkBuddyAI) has its OWN catalogue which does NOT contain hy4-preview or deepseek-v4.1-flash - it offers hy3 (free), gpt-5.1-codex-mini, gemini-3.1-flash-lite, gemini-2.5-flash, minimax-m3, gemini-3.0-flash, deepseek-v3-2-volc, kimi-k2.5/2.6, glm-5.0/5.2/5.3, gpt-5.3-codex, gpt-5.4/5.5, gpt-5.6-sol/terra/luna and the role aliases (fast/balanced/primary/deep-model); "workbuddy" (domestic desktop) has a further catalogue (auto, hy4-preview, hy3, deepseek-v4.1-flash, glm-5.x, kimi-k2.6/2.7/2.8-preview/k3-1, minimax-m3/m2.7, deepseek-v4-pro). Within a face availability is still gated per ACCOUNT: an id outside the account catalogue fails with "400 model [...] service info not found", and one inside it but unlicensed fails with "400 model [...] is only available for authorized users". International ids (claude-sonnet-5, claude-opus-5, gemini-3.1-pro, ...) are per-account gated and return the latter for a domestic account. COST: every id carries a credit multiplier in the credits field of its descriptor (x0.00 means free, x3.31 means 3.31x the base rate); the settings panel shows each candidate with its multiplier and reads it live from the CLI descriptor, so it stays in sync when the CLI is upgraded. Measured free (x0.00) models for this account: hy3 and deepseek-v4.1-flash (both npm faces) and hy3 for WorkBuddyAI; hy4-preview is x0.29 on npm faces. Prefer the cheapest model that can do the job and use a free one for routine work; do not silently upgrade to an expensive id when the task is simple. To get the exact live list for a CLI, run it with a deliberately invalid model id - the reply prints "Currently supported models for your account:" followed by one "- <id>" per line (core exposes parseAccountModels for this). Pass a model only when the task clearly benefits from a specific one; the default is usually right. Optional effort: minimal/low/medium/high/xhigh/max. Optional maxTurns caps agentic turns (default unlimited).',
   '',
   'Backends: codebuddy_run/codebuddy_continue take an optional backend parameter choosing which CLI face of the same engine (Tencent CodeBuddy Code) runs the task. "codebuddy" is the domestic CodeBuddy (npm CLI @tencent-ai/codebuddy-code, product endpoint www.codebuddy.ai) — default for coding work. "codebuddy-intl" is the INTERNATIONAL face of that SAME npm CLI (product.ioa.json catalogue: claude-sonnet-5, claude-opus-5, gemini-3.1-pro, gpt-6-astra, hy3-ioa …); use it when the account is an international CodeBuddy account. Its aliases "codebuddy-ioa" and "codebuddy-international" are accepted and normalized to codebuddy-intl. "codebuddy-en" is the WorkBuddy INTERNATIONAL edition — the CLI bundled with the WorkBuddyAI desktop app (C:\\Program Files\\WorkBuddyAI, product endpoint www.workbuddy.ai); the aliases "workbuddy-en" and "workbuddy-ai" are also accepted and normalized to codebuddy-en. "workbuddy" is the CLI bundled with the domestic WorkBuddy desktop app (product endpoint copilot.tencent.com, zero config) — the office-scenario face: documents, slides, spreadsheets, knowledge-base lookups, image/video generation, WeChat/WeCom replies. When the user asks for office/document/IM work, dispatch with backend="workbuddy"; for international accounts use "codebuddy-intl" (CodeBuddy 国际版) or "codebuddy-en" (WorkBuddy 国际版 / WorkBuddyAI). Sessions are kept per backend (login domains are exclusive), and continuing a session automatically routes back to the backend that owns it (explicit backend wins). A user-preferred default backend (plugin settings) applies when a call is new (no session) and no explicit backend is given.'
 ].join('\n')
