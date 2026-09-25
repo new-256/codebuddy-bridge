@@ -2,6 +2,54 @@
 
 本项目遵循 [语义化版本](https://semver.org/)；版本号同步 `package.json`、Git tag 与 GitHub Release（`npm run check` 中的 `scripts/verify.mjs` 在 CI 里锁三处一致）。
 
+## [1.6.0] - 2026-09-25
+
+### 修复
+- **模型清单读错文件、且混入不可用型号（用户连续三次反馈的「模型获取错误」根因）**：
+  此前每个后端都只读安装目录下的 `product.json`。真机逆向 `npm\dist\codebuddy.js` 里的
+  `ClientInternetEnviromentProductProvider` 后确认：CLI 运行时加载的是
+  **`product.${env}.json`**（`env` 由 `CODEBUDDY_INTERNET_ENVIRONMENT` / settings 的 `env` /
+  账号的 `productConfigEnv` 决定，后者在本机解析为 `ioa`），读取失败才回退 `product.json`。
+  于是四个后端的清单全部来自「另一份文件」——这正是反复出现错漏的根因。
+  - `PRODUCT_DESCRIPTOR_ENV` 改为 `rel: product.ioa.json` + `fallbackRel: product.json`
+    （WorkBuddyAI 只带 `product.json`，回退链在其上真正生效）。
+  - 解析结果：`codebuddy` 30→67、`codebuddy-intl` 36→53、`codebuddy-en` 37（无 ioa 变体，回退）、
+    `workbuddy` 48→93；`claude-opus-4.8`、`gpt-5.4` 等首次正确出现。
+
+- **描述文件不是「可用清单」——新增账号级授权分流（本次核心修正）**：
+  实测发现描述文件里绝大多数型号**本账号无权使用**：
+  `glm-5.3-ioa`、`hy3-ioa`、`deepseek-v4-pro-ioa` 全部返回
+  `400 ... is only available for authorized users`，而未带后缀的 `glm-5.3` / `hy3` 正常可用。
+  即描述文件用的 `-ioa` 命名与服务端账号清单**不是同一套 id**。
+  - 新增 `parseAccountModels()` 的**落地调用**：任何一次真实调用返回 400 时，CLI 会附
+    `Currently supported models for your account:`，`buildResult` 顺手解析并经
+    `rememberAccountCatalog()` 缓存 —— 零额外开销地拿到**唯一权威的可用清单**。
+  - 新增 `lookupModelCredits()`：跨 `-ioa` 命名与别名表匹配倍率，
+    使账号清单里的 `glm-5.3` 也能挂上描述文件里 `glm-5.3-ioa` 的 x0.79。
+  - `modelCatalogDetailed()` 合并两个来源：账号清单条目标 `authorized: true` 并排在最前，
+    描述文件独有的标 `authorized: false` 并在 label 里加「未授权」。
+  - 本机实测：`codebuddy` / `codebuddy-intl` / `workbuddy` 均为
+    **已授权 16 个、未授权 51~93 个**，且 16 个可用型号**全部挂上倍率**，
+    数值与用户 CLI 菜单截图逐条吻合（`glm-5.2` x0.79、`kimi-k2.6` x0.52、`minimax-m2.7` x0.19、
+    `hy4-preview` 免费）。
+
+- **倍率字段未透传到面板（自查发现的连带缺陷）**：`backendSettingsMeta()` 的 `modelOptions`
+  漏传 `authorized`，导致面板「可用 / 未授权」分流全部落空、一个模型都渲染不出来。
+  已补上并用回归测试锁死。
+
+### 变更
+- **四个后端一律以自己安装的描述文件为准，取消 npm 面的静态表并集**（推翻 v1.4.1/v1.4.2 的设计）。
+  静态实测表既缺 CLI 真实菜单里的型号，又会留住已下架的 id；现降级为「读不到文件时的兜底」。
+- 面板：下拉候选只列**本账号可用**的型号（上限 60 条），并在倍率区新增
+  「未授权 ×N」一行单独列出不可用型号 —— 避免用户选中后才发现报 400。
+- `POLICY_TEXT` 与六处 `model` 参数说明同步改写：明确「可用性由账号决定，权威清单来自服务端
+  400 报文」，并点名 `claude-opus-4.8` / `gpt-5.4` / `gpt-6-astra` 属「目录里有但本账号无权限」。
+
+### 测试
+- 144 → **148** 通过。新增：`lookupModelCredits` 跨命名/别名匹配、
+  `modelCatalogDetailed` 授权分流与排序、`rememberAccountCatalog` 缓存语义（空数组不覆盖、
+  返回副本）、`authorized` 透传回归；并改写两条编码旧并集设计的用例。
+
 ## [1.5.0] - 2026-09-25
 
 **每个模型后面挂上倍率**。用户要求：「在模型后方都挂上倍率，并且能够根据 cli 同步更新，让用户能够精确判断」。

@@ -394,10 +394,14 @@ window.__ModuleLoader__.load({
       // 旧版后端不返回时退化为纯 id 列表，保证向前兼容。
       const opts = (cur && Array.isArray(cur.modelOptions) && cur.modelOptions.length)
         ? cur.modelOptions
-        : models.map(function (m) { return { id: m, label: m, credits: null, free: false, hasCredits: false }; });
-      const freeOnes = opts.filter(function (o) { return o.free; });
-      const priced = opts.filter(function (o) { return o.hasCredits && !o.free; });
-      const unknown = opts.filter(function (o) { return !o.hasCredits; });
+        : models.map(function (m) { return { id: m, label: m, credits: null, free: false, hasCredits: false, authorized: null }; });
+      // v1.6.0：区分「账号已授权（实测可用）」与「目录里有但本账号未授权」。
+      // 未授权的选中必报 400，必须让用户一眼看出，而不是选了才知道。
+      const usable = opts.filter(function (o) { return o.authorized !== false; });
+      const blocked = opts.filter(function (o) { return o.authorized === false; });
+      const freeOnes = usable.filter(function (o) { return o.free; });
+      const priced = usable.filter(function (o) { return o.hasCredits && !o.free; });
+      const unknown = usable.filter(function (o) { return !o.hasCredits; });
       return react.createElement("div", { className: "cbs-root" },
         react.createElement("div", null,
           react.createElement("div", { className: "cbs-h" }, "CodeBuddy 桥接"),
@@ -414,9 +418,10 @@ window.__ModuleLoader__.load({
             react.createElement("label", { className: "cbs-label", htmlFor: "cbs-model" }, "默认模型"),
             react.createElement("div", { className: "cbs-ctl" },
               react.createElement("input", { id: "cbs-model", className: "cbs-input", list: "cbs-model-list", value: form.defaultModel, onChange: setField("defaultModel"), placeholder: "留空 = 各 CLI 自身默认", spellCheck: false }),
-              react.createElement("datalist", { id: "cbs-model-list" }, opts.map(function (o) { return react.createElement("option", { key: o.id, value: o.id, label: o.label }); })),
-              react.createElement("div", { className: "cbs-note" }, "候选来自该后端自己的模型目录（桌面版严格以自己安装为准，npm 面另有账号实测清单）；型号先看产品面是否提供，再看账号是否授权。也可手输任意 CLI 支持的模型 id。"),
+              react.createElement("datalist", { id: "cbs-model-list" }, usable.slice(0, 60).map(function (o) { return react.createElement("option", { key: o.id, value: o.id, label: o.label }); })),
+              react.createElement("div", { className: "cbs-note" }, "候选来自该后端自己的模型目录（CLI 运行时真正加载的 product 描述文件）；标「未授权」的型号本账号无权限，选中会报 400。也可手输任意 CLI 支持的模型 id。"),
               // v1.5.0：倍率一览 —— 让用户能精确判断成本。倍率随 CLI 描述文件实时同步。
+              // v1.6.0：只统计「本账号可用」的型号，并把未授权的单独列成一行。
               opts.length ? react.createElement("div", { className: "cbs-rates" },
                 freeOnes.length ? react.createElement("div", { className: "cbs-rate-row" },
                   react.createElement("span", { className: "cbs-rate-tag cbs-rate-free" }, "免费 ×" + freeOnes.length),
@@ -429,6 +434,10 @@ window.__ModuleLoader__.load({
                 unknown.length ? react.createElement("div", { className: "cbs-rate-row" },
                   react.createElement("span", { className: "cbs-rate-tag cbs-rate-unknown" }, "未标倍率"),
                   react.createElement("span", { className: "cbs-rate-ids" }, unknown.map(function (o) { return o.id; }).join("、")),
+                ) : null,
+                blocked.length ? react.createElement("div", { className: "cbs-rate-row" },
+                  react.createElement("span", { className: "cbs-rate-tag cbs-rate-unknown" }, "未授权 ×" + blocked.length),
+                  react.createElement("span", { className: "cbs-rate-ids" }, blocked.map(function (o) { return o.id; }).join("、")),
                 ) : null,
               ) : null,
               react.createElement("div", { className: "cbs-note" }, "倍率取自该 CLI 的 product 描述文件（credits 字段），随 CLI 升级自动同步；倍率为消费系数，x0.00 即免费。未标倍率的型号表示该安装未提供该数据，不代表免费。")),

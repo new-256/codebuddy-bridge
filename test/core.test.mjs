@@ -15,7 +15,7 @@ import {
   BACKEND_LABELS, BACKEND_ALIASES,
   extractModelIds, readBackendModelCatalog, backendModelCatalog, parseAccountModels, BACKEND_MODEL_IDS,
   parseCreditValue, extractModelCredits, formatCreditLabel, modelCatalogDetailed, formatModelCatalogText,
-  backendSettingsMeta,
+  backendSettingsMeta, lookupModelCredits, rememberAccountCatalog, getAccountCatalog,
   resolveEnToken, readDshWorkbuddyToken
 } from '../core/codebuddy-core.mjs'
 
@@ -571,18 +571,27 @@ test('extractModelIds：优先取更完整的那份（agents.cli vs 顶层 model
   assert.equal(extractModelIds({}), null)
 })
 
-test('backendModelCatalog：桌面版严格只认自己安装的目录，不并集（v1.4.2）', () => {
-  // 桌面版（codebuddy-en / workbuddy）：文件里有什么就是什么，绝不混入 npm 面型号
+test('backendModelCatalog：v1.6.0 四后端一律以自己安装的描述文件为准，不做静态表并集', () => {
+  // v1.6.0 推翻了 v1.4.1/v1.4.2 的「npm 面并集」设计：真机实测静态表既缺 CLI
+  // 真实菜单里的型号（claude-opus-4.8 / gpt-5.4 / default），又会留住已下架的 id。
+  // 而 product.${env}.json 是 CLI 运行时真正加载的那份，是唯一权威。
   const onlyHy3 = { readFileSync: () => JSON.stringify({ models: [{ id: 'hy3' }, { id: 'gpt-5.5' }] }) }
-  assert.deepEqual(backendModelCatalog('codebuddy-en', onlyHy3), ['hy3', 'gpt-5.5'], '桌面版不得并集静态表')
-  assert.ok(!backendModelCatalog('codebuddy-en', onlyHy3).includes('hy4-preview'),
-    'WorkBuddyAI 自己目录没有 hy4-preview，不能列出来')
-  assert.ok(!backendModelCatalog('workbuddy', onlyHy3).includes('auto'), 'workbuddy 同样严格')
-  // npm 面：并集，静态表在前
+  for (const b of ['codebuddy', 'codebuddy-intl', 'codebuddy-en', 'workbuddy']) {
+    assert.deepEqual(backendModelCatalog(b, onlyHy3), ['hy3', 'gpt-5.5'],
+      b + '：文件为准，不并集静态表')
+  }
+  // 静态表只在读不到文件时兜底
+  const noFile = { readFileSync: () => { throw new Error('ENOENT') } }
+  assert.ok(backendModelCatalog('codebuddy', noFile).includes('hy4-preview'),
+    '读不到文件时退化为静态表兜底')
+})
+
+test('backendModelCatalog：npm 面与桌面版都按各自描述文件解析（v1.6.0）', () => {
   const extra = { readFileSync: () => JSON.stringify({ models: [{ id: 'glm-5.2' }, { id: 'brand-new' }] }) }
-  const npmIds = backendModelCatalog('codebuddy', extra)
-  assert.equal(npmIds[0], 'hy4-preview', 'npm 面静态表在前')
-  assert.ok(npmIds.includes('brand-new'), 'npm 面并入文件里多出的 id')
+  assert.deepEqual(backendModelCatalog('codebuddy', extra), ['glm-5.2', 'brand-new'],
+    'npm 面不再把静态表排在前')
+  assert.ok(!backendModelCatalog('codebuddy', extra).includes('hy4-preview'),
+    '文件里没有的型号不再由静态表补进来')
 })
 
 test('parseCreditValue：只认 x<数字>，缺失/空串一律 null（0 与「未知」不可混淆）', () => {
@@ -675,6 +684,15 @@ test('backendSettingsMeta 带 modelOptions（含 label），models 仍为纯 id 
   assert.equal(hy3.label, 'hy3 · 免费')
   assert.equal(hy3.credits, 0)
   assert.equal(hy3.free, true)
+  // v1.6.0 回归：authorized 必须透传到 modelOptions，否则面板的「可用/未授权」
+  // 分流会全部落空（曾因漏传导致面板一个模型都渲染不出来）。
+  assert.ok('authorized' in hy3, 'modelOptions 必须带 authorized 字段')
+  assert.equal(hy3.authorized, null, '未探测时是 null（而不是 false）')
+  const io2 = { readFileSync: () => doc, accountModels: ['hy3'] }
+  const meta2 = backendSettingsMeta('codebuddy', io2)
+  assert.equal(meta2.modelOptions.find((x) => x.id === 'hy3').authorized, true)
+  assert.equal(meta2.modelOptions.find((x) => x.id === 'glm-5.3').authorized, false,
+    '不在账号清单里的型号标未授权')
   assert.ok(meta.models.every((m) => typeof m === 'string'), 'models 保持纯字符串数组（向后兼容）')
   assert.deepEqual(meta.models, meta.modelOptions.map((x) => x.id))
 })
@@ -684,6 +702,59 @@ test('formatModelCatalogText：输出 id · 倍率 的紧凑文本', () => {
   const t = formatModelCatalogText('codebuddy', { readFileSync: () => doc })
   assert.ok(t.includes('hy3 · 免费'), t)
   assert.ok(t.includes('glm-5.3 · x0.79'), t)
+})
+
+test('lookupModelCredits：跨 -ioa 命名与别名表匹配（v1.6.0）', () => {
+  const map = new Map([['glm-5.3-ioa', 0.79], ['kimi-k3', 1.62], ['hy3', 0], ['codewise-default-model-v2', 2.0]])
+  // 账号清单用无后缀名，描述文件用 -ioa 名 —— 必须匹配上
+  assert.equal(lookupModelCredits(map, 'glm-5.3'), 0.79, '自动补 -ioa 后缀')
+  assert.equal(lookupModelCredits(map, 'glm-5.3-ioa'), 0.79, '精确同名')
+  assert.equal(lookupModelCredits(map, 'kimi-k3-1'), 1.62, '别名表：kimi-k3-1 → kimi-k3')
+  assert.equal(lookupModelCredits(map, 'hy3-x'), 0, '别名表：hy3-x → hy3（免费）')
+  assert.equal(lookupModelCredits(map, 'default'), 2.0, '别名表：default → codewise-default-model-v2')
+  assert.equal(lookupModelCredits(map, 'unknown-model'), null)
+  assert.equal(lookupModelCredits(null, 'hy3'), null, '无映射表 → null 而不是抛错')
+})
+
+test('modelCatalogDetailed：账号清单在前、未授权标记、倍率跨命名挂上（v1.6.0）', () => {
+  const doc = JSON.stringify({
+    models: [
+      { id: 'glm-5.3-ioa', credits: 'x0.79 credits' },
+      { id: 'hy3-ioa', credits: 'x0.00 credits' },
+      { id: 'claude-opus-4.8', credits: 'x3.33 credits' }
+    ]
+  })
+  const io = { readFileSync: () => doc, accountModels: ['hy3', 'glm-5.3'] }
+  const items = modelCatalogDetailed('codebuddy', io)
+  const byId = Object.fromEntries(items.map((x) => [x.id, x]))
+  // 账号清单里的两条：已授权 + 倍率跨命名挂上
+  assert.equal(byId['hy3'].authorized, true)
+  assert.equal(byId['hy3'].credits, 0)
+  assert.equal(byId['hy3'].label, 'hy3 · 免费')
+  assert.equal(byId['glm-5.3'].authorized, true)
+  assert.equal(byId['glm-5.3'].credits, 0.79)
+  assert.equal(byId['glm-5.3'].label, 'glm-5.3 · x0.79')
+  // 描述文件独有：标未授权
+  assert.equal(byId['claude-opus-4.8'].authorized, false)
+  assert.ok(byId['claude-opus-4.8'].label.includes('未授权'), '未授权要写在 label 里')
+  // 已授权的排在未授权之前
+  const firstBlocked = items.findIndex((x) => x.authorized === false)
+  const lastAuthorized = items.map((x) => x.authorized).lastIndexOf(true)
+  assert.ok(lastAuthorized < firstBlocked, '已授权全部排在未授权之前')
+})
+
+test('rememberAccountCatalog / getAccountCatalog：缓存服务端实时清单', () => {
+  const backend = 'workbuddy'
+  assert.equal(getAccountCatalog(backend), null, '未记录前为 null')
+  rememberAccountCatalog(backend, ['auto', 'hy3'])
+  assert.deepEqual(getAccountCatalog(backend), ['auto', 'hy3'])
+  // 空数组不覆盖已有缓存（避免一次解析失败抹掉好数据）
+  rememberAccountCatalog(backend, [])
+  assert.deepEqual(getAccountCatalog(backend), ['auto', 'hy3'])
+  // 返回副本，外部改动不影响内部
+  const got = getAccountCatalog(backend)
+  got.push('injected')
+  assert.deepEqual(getAccountCatalog(backend), ['auto', 'hy3'])
 })
 
 test('免费模型归属：hy3 / deepseek-v4.1-flash 属 npm 面，不在 WorkBuddyAI 目录', () => {
@@ -699,18 +770,17 @@ test('免费模型归属：hy3 / deepseek-v4.1-flash 属 npm 面，不在 WorkBu
   assert.equal(BACKEND_MODEL_IDS['codebuddy-en'][0], 'hy3', '免费模型排最前')
 })
 
-test('backendModelCatalog：静态账号实测表为主，product 文件只做并集补充（v1.4.1 修正）', () => {
-  // 文件里多出来的 id 追加在后（静态表在前）
+test('backendModelCatalog：文件为准；读不到文件才回退静态表（v1.6.0 取代 v1.4.1 的并集）', () => {
+  // 文件命中的情况下，静态表**完全不参与**（这是 v1.6.0 的核心行为变更）
   const fake = { readFileSync: () => JSON.stringify({ models: [{ id: 'glm-5.2' }, { id: 'brand-new-from-file' }] }) }
   const ids = backendModelCatalog('codebuddy', fake)
-  assert.equal(ids[0], 'hy4-preview', '静态表在前（账号实测过的优先）')
-  assert.ok(ids.includes('brand-new-from-file'), '文件里额外的 id 应被并入')
-  assert.equal(ids.filter((x) => x === 'glm-5.2').length, 1, '并集需去重')
-  // 读不到文件 → 纯静态表，非空
+  assert.deepEqual(ids, ['glm-5.2', 'brand-new-from-file'], '文件里是什么就是什么')
+  assert.ok(!ids.includes('hy4-preview'), '文件里没有的型号不再由静态表补进来')
+  // 读不到文件 → 回退纯静态表，非空
   const boom = { readFileSync: () => { throw new Error('nope') } }
   const fb = backendModelCatalog('codebuddy', boom)
   assert.deepEqual(fb, BACKEND_MODEL_IDS['codebuddy'])
-  // npm 面静态表仍需含账号实测型号
+  // npm 面静态表仍需含账号实测型号（兜底质量）
   assert.ok(fb.includes('hy4-preview'))
   // 未知后端 → 空数组而不是抛错
   assert.deepEqual(backendModelCatalog('bogus', boom), [])

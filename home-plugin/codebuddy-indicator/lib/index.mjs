@@ -232,7 +232,7 @@ export function settingsView(io) {
     endpointOverride: snap.endpointOverride,
     // token 明文永不外传：只给「是否已设置 + 尾 4 位掩码」。POST 时留空 = 保持现值。
     codebuddyEnToken: maskToken(snap.codebuddyEnToken),
-    backends: allBackendSettingsMeta(),
+    backends: allBackendSettingsMeta(o),
     diagnostics: BACKENDS.map((b) => diagnoseBackend(b, snap, o))
   }
 }

@@ -41,7 +41,7 @@
 
 > v1.3.1 及以前的「DSH 面板改动落行 config、MCP 独立读文件」双轨制在 v1.3.2 合并为文件单轨；行 config 仅作为文件不存在时的兼容回退保留。
 
-三个后端与 dsh 版本无关，但**各有独立安装包**（v1.3.1 由真机 `product.json` 核实，
+四个后端与 dsh 版本无关，但**各有独立安装包**（v1.3.1 由真机 `product.json` 核实，
 推翻 v1.3.0 的「同一 npm CLI」结论；见 [CHANGELOG](CHANGELOG.md) §1.3.1 与
 [ROOT-CAUSE-codebuddy-en.md](ROOT-CAUSE-codebuddy-en.md)）：
 
@@ -52,9 +52,16 @@
 | `codebuddy-en`（v1.3.3 显示名「WorkBuddy 国际版（WorkBuddyAI 桌面 CLI）」；别名 `workbuddy-en` / `workbuddy-ai` 归一到该规范 id） | WorkBuddy 国际版（WorkBuddyAI）桌面版（`C:\Program Files\WorkBuddyAI`） | `www.workbuddy.ai` | **凭据自动复用**：设置面板 `codebuddyEnToken` → 环境变量 `CODEBUDDY_AUTH_TOKEN` → DSH 凭据库（`.credentials.yaml`/`.env` 的 `WORKBUDDY_TOKEN`）；三条通道皆空才 `AUTH_REQUIRED` |
 | `workbuddy` | WorkBuddy 桌面版（`C:\Program Files\WorkBuddy`） | `copilot.tencent.com` | 已登录即用（端点按登录域自动对齐） |
 
-**模型清单（v1.4.0 起）**：候选模型不再硬编码，改为**运行时**从各安装自己的 product 描述文件读取
-（`agents.cli.models` 与顶层 `models` 取更完整的那份；读不到则回退内置实测清单）。实测各面项数：
-`codebuddy` = 22、`codebuddy-intl` = 53、`codebuddy-en` = 37、`workbuddy` = 23。
+**模型清单（v1.6.0 起）**：候选模型不再硬编码，改为**运行时**从各安装**真正被 CLI 加载的那份** product 描述文件读取。
+关键修正：CLI 加载的是 **`product.${env}.json`**（`env` 由 `CODEBUDDY_INTERNET_ENVIRONMENT` / settings 的 `env` / 账号的
+`productConfigEnv` 决定，本机解析为 `ioa`），读取失败才回退 `product.json`；v1.6.0 之前一律只读后者，是模型清单反复出错的根因。
+**描述文件只是「目录」，不是「可用清单」**：其中的 `-ioa` 命名对多数账号 `400 only available for authorized users`。
+因此 v1.6.0 把 `parseAccountModels()` 接进真实调用路径（400 报文里含服务端权威清单，缓存复用、零额外开销），
+面板只列**本账号已授权**的型号，并把目录独有项标为「未授权」。
+
+实测（2026-09-25，本机）：描述文件解析项数 `codebuddy` = 67、`codebuddy-intl` = 53、`codebuddy-en` = 37、`workbuddy` = 93；
+而**账号可用**清单为 `codebuddy` / `codebuddy-intl` / `workbuddy` 各 16 个（`codebuddy-en` 未登录，回退其自带目录 37 项），
+16 个可用型号全部挂上倍率（数据源为 `models[].credits`，`lookupModelCredits()` 负责跨 `-ioa` 命名与别名匹配）。
 
 设置键（v1.3.1）：`preferredBackend` / `defaultModel` / `codebuddyEnToken` / `endpointOverride`
 （`codebuddyEnBaseUrl` 已移除——其默认值 `https://www.workbuddy.ai/v2` 对默认后端是错的）。
