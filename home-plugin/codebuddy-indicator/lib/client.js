@@ -401,7 +401,7 @@ window.__ModuleLoader__.load({
             react.createElement("div", { className: "cbs-ctl" },
               react.createElement("input", { id: "cbs-model", className: "cbs-input", list: "cbs-model-list", value: form.defaultModel, onChange: setField("defaultModel"), placeholder: "留空 = 各 CLI 自身默认", spellCheck: false }),
               react.createElement("datalist", { id: "cbs-model-list" }, models.map(function (m) { return react.createElement("option", { key: m, value: m }); })),
-              react.createElement("div", { className: "cbs-note" }, "候选以真机按账号实测的可用清单为主，再并入该安装 product 描述文件里的额外 id；模型可用性由账号决定，与安装/产品面无关。也可手输任意 CLI 支持的模型 id。")),
+              react.createElement("div", { className: "cbs-note" }, "候选来自该后端自己的模型目录（桌面版严格以自己安装为准，npm 面另有账号实测清单）；型号先看产品面是否提供，再看账号是否授权。也可手输任意 CLI 支持的模型 id。")),
             react.createElement("label", { className: "cbs-label", htmlFor: "cbs-endpoint" }, "端点覆盖"),
             react.createElement("div", { className: "cbs-ctl" },
               react.createElement("input", { id: "cbs-endpoint", className: "cbs-input", value: form.endpointOverride, onChange: setField("endpointOverride"), placeholder: "留空 = 按登录域自动推导（推荐）", spellCheck: false }),

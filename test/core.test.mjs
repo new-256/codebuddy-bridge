@@ -569,6 +569,33 @@ test('extractModelIds：优先取更完整的那份（agents.cli vs 顶层 model
   assert.equal(extractModelIds({}), null)
 })
 
+test('backendModelCatalog：桌面版严格只认自己安装的目录，不并集（v1.4.2）', () => {
+  // 桌面版（codebuddy-en / workbuddy）：文件里有什么就是什么，绝不混入 npm 面型号
+  const onlyHy3 = { readFileSync: () => JSON.stringify({ models: [{ id: 'hy3' }, { id: 'gpt-5.5' }] }) }
+  assert.deepEqual(backendModelCatalog('codebuddy-en', onlyHy3), ['hy3', 'gpt-5.5'], '桌面版不得并集静态表')
+  assert.ok(!backendModelCatalog('codebuddy-en', onlyHy3).includes('hy4-preview'),
+    'WorkBuddyAI 自己目录没有 hy4-preview，不能列出来')
+  assert.ok(!backendModelCatalog('workbuddy', onlyHy3).includes('auto'), 'workbuddy 同样严格')
+  // npm 面：并集，静态表在前
+  const extra = { readFileSync: () => JSON.stringify({ models: [{ id: 'glm-5.2' }, { id: 'brand-new' }] }) }
+  const npmIds = backendModelCatalog('codebuddy', extra)
+  assert.equal(npmIds[0], 'hy4-preview', 'npm 面静态表在前')
+  assert.ok(npmIds.includes('brand-new'), 'npm 面并入文件里多出的 id')
+})
+
+test('免费模型归属：hy3 / deepseek-v4.1-flash 属 npm 面，不在 WorkBuddyAI 目录', () => {
+  // 真机读 product.json 的 credits 字段：这两件是 x0.00（免费）
+  assert.ok(BACKEND_MODEL_IDS['codebuddy'].includes('hy3'), 'npm 面含免费 hy3')
+  assert.ok(BACKEND_MODEL_IDS['codebuddy'].includes('deepseek-v4.1-flash'), 'npm 面含免费 deepseek-v4.1-flash')
+  assert.ok(BACKEND_MODEL_IDS['codebuddy'].includes('hy4-preview'), 'npm 面含 hy4-preview')
+  // WorkBuddyAI 只有 hy3（实测其 product.json 无 hy4-preview / deepseek-v4.1-flash）
+  assert.ok(BACKEND_MODEL_IDS['codebuddy-en'].includes('hy3'), 'WorkBuddyAI 含 hy3')
+  assert.ok(!BACKEND_MODEL_IDS['codebuddy-en'].includes('hy4-preview'), 'WorkBuddyAI 不得含 hy4-preview')
+  assert.ok(!BACKEND_MODEL_IDS['codebuddy-en'].includes('deepseek-v4.1-flash'), 'WorkBuddyAI 不得含 deepseek-v4.1-flash')
+  // 免费优先：回退表首项应是 hy3
+  assert.equal(BACKEND_MODEL_IDS['codebuddy-en'][0], 'hy3', '免费模型排最前')
+})
+
 test('backendModelCatalog：静态账号实测表为主，product 文件只做并集补充（v1.4.1 修正）', () => {
   // 文件里多出来的 id 追加在后（静态表在前）
   const fake = { readFileSync: () => JSON.stringify({ models: [{ id: 'glm-5.2' }, { id: 'brand-new-from-file' }] }) }
@@ -580,6 +607,7 @@ test('backendModelCatalog：静态账号实测表为主，product 文件只做�
   const boom = { readFileSync: () => { throw new Error('nope') } }
   const fb = backendModelCatalog('codebuddy', boom)
   assert.deepEqual(fb, BACKEND_MODEL_IDS['codebuddy'])
+  // npm 面静态表仍需含账号实测型号
   assert.ok(fb.includes('hy4-preview'))
   // 未知后端 → 空数组而不是抛错
   assert.deepEqual(backendModelCatalog('bogus', boom), [])

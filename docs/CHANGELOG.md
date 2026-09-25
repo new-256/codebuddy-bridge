@@ -2,6 +2,33 @@
 
 本项目遵循 [语义化版本](https://semver.org/)；版本号同步 `package.json`、Git tag 与 GitHub Release（`npm run check` 中的 `scripts/verify.mjs` 在 CI 里锁三处一致）。
 
+## [1.4.2] - 2026-09-25
+
+**「哪个产品面提供哪些模型」搞清楚了**。用户反馈：WorkBuddy 国际版界面上明明有 `Hy4 preview` / `Hy3` / `Deepseek-V4.1-Flash` 三个 **Free now（0.00x）** 模型，列表里却看不到。
+
+### 查证结果
+
+读各安装 `product.json` 的 `credits` 字段实测：
+
+| 模型 | npm CLI（`codebuddy`/`codebuddy-intl`） | WorkBuddyAI（`codebuddy-en`） |
+|---|---|---|
+| `hy3` | `x0.00` ← 免费 | `x0.00` ← 免费 ✅ |
+| `deepseek-v4.1-flash` | `x0.00` ← 免费 | **目录里根本没有** ❌ |
+| `hy4-preview` | `x0.29`（促销号常免费） | **目录里根本没有** ❌ |
+
+所以那三个免费模型是 **npm CLI 面**（`codebuddy`）的目录，**不是 WorkBuddyAI 的**。而 v1.4.1 的 `codebuddy-en` 清单是照 WorkBuddyAI 的 product.json 拼的 —— 它自己只有 `hy3` 一个免费模型，`agents.cli.models` 更只有 4 个角色别名（fast/balanced/primary/deep-model）。
+
+### v1.4.1 的残余错误
+
+v1.4.1 的并集逻辑（静态表 ∪ 文件）**会把 npm 面的型号混进桌面版**，让 `codebuddy-en` 列出自己安装根本不存在的型号 —— 用户选了必然报错。
+
+### 改了什么
+
+- **新增 `BACKEND_STRICT_CATALOG`**：`codebuddy-en` / `workbuddy` 两个桌面后端**严格只认自己安装目录里的 product 描述文件**，不与静态表做并集；npm 两个后端（`codebuddy` / `codebuddy-intl`）保持并集（静态账号实测表在前）。
+- **`codebuddy-en` 静态回退表按实测重写**：按其 `credits` 字段排序，**免费优先** —— 首项为 `hy3`，其后是 `gpt-5.1-codex-mini`、`gemini-3.1-flash-lite`、`gemini-2.5-flash`、`minimax-m3`、`gemini-3.0-flash`、`deepseek-v3-2-volc` 等；**移除** `hy4-preview` / `deepseek-v4.1-flash`（该安装没有）。
+- policy 模型段重写为「先分清是哪个产品面提供，再看账号授权」，并点名三个免费模型的归属。
+- 新增 2 个测试（严格边界 + 免费模型归属），测试 134→136。
+
 ## [1.4.1] - 2026-09-25
 
 **模型清单的权威来源找对了：按账号，不按安装**。用户指出「分清楚 codebuddy 与 workbuddy 的模型，暂时看来可能有误」——**确实有误，且 v1.4.0 的整个思路就是错的**。

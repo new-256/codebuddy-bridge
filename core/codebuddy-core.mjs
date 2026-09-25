@@ -130,12 +130,46 @@ export const DEFAULT_BACKEND = 'codebuddy'
 //
 // 下面的静态表 = 上表（离线/无凭据时的回退）。需要精确清单时用
 // `probeBackendModels()`（见下）实时问服务端。
+// 各后端的可选模型。
+//
+// ── 修正历史（重要，三次迭代才对）──────────────────────────────────────────────
+// v1.3.x：抄了国内版 product.internal.json → 错（含本机没有的型号）。
+// v1.4.0：改成读各安装的 product.json → 仍错。那是**发行版内置候选表**，不等于
+//         **账号可用**；实测 default-model / primary-model / gpt-6-astra 全部报
+//         `400 model [...] service info not found`。
+// v1.4.1：改为「按账号」为准，并写出解析服务端 `Currently supported models for
+//         your account:` 的 parseAccountModels()。但对 `codebuddy-en` 仍有一处
+//         错：那份清单是**照 WorkBuddyAI 的 product.json 拼的**，而用户实际看到的
+//         「Hy4 preview / Hy3 / Deepseek-V4.1-Flash 免费」是 **npm CLI 面**的目录。
+//
+// ── v1.4.2：区分「谁提供模型」──────────────────────────────────────────────
+// 关键事实（真机读 product.json 的 `credits` 字段实测）：
+//   * npm CLI（codebuddy / codebuddy-intl）：目录里有三件免费套件
+//       hy3                  credits=x0.00   ← 免费
+//       deepseek-v4.1-flash  credits=x0.00   ← 免费
+//       hy4-preview          credits=x0.29
+//   * WorkBuddyAI（codebuddy-en）：自己的 product.json **没有** hy4-preview，
+//     也没有 deepseek-v4.1-flash，只有 hy3（x0.00）；agents.cli.models 仅 4 个
+//     角色别名（fast/balanced/primary/deep-model）。
+//   * 两个桌面版（codebuddy-en / workbuddy）自带完整清单，**不应**把 npm 面的
+//     型号并进来 —— 那是另一个产品面的权限，列出来只会让用户选了报错。
+// 因此：npm 两个后端用账号实测清单；两个桌面后端**严格以自己安装的目录为准**
+// （见 BACKEND_STRICT_CATALOG）。
+//
+// 需要精确清单时用 parseAccountModels() 解析服务端实时返回的账号清单。
 export const BACKEND_MODEL_IDS = {
   'codebuddy': ['hy4-preview', 'hy3', 'hy3-x', 'deepseek-v4.1-flash', 'glm-5.3', 'glm-5.3-flash', 'glm-5.2', 'glm-5.1', 'glm-5v-turbo', 'minimax-m3', 'minimax-m2.7', 'kimi-k3-1', 'kimi-k2.8-preview', 'kimi-k2.7', 'kimi-k2.6', 'deepseek-v4-pro'],
   'codebuddy-intl': ['claude-sonnet-5', 'claude-sonnet-5-1m', 'claude-opus-5', 'claude-opus-4.8', 'claude-opus-4.8-1m', 'gemini-3.1-pro', 'gemini-3.5-flash', 'gpt-5.6-sol', 'gpt-5.6-terra', 'gpt-5.6-luna', 'gpt-5.5', 'gpt-5.4', 'glm-5.3-ioa', 'glm-5.3-flash-ioa', 'glm-5.2-ioa', 'kimi-k3-ioa', 'kimi-k2.8-preview', 'kimi-k2.6-ioa', 'minimax-m3-ioa', 'minimax-m2.7-ioa', 'deepseek-v4.1-flash', 'deepseek-v4-pro-ioa'],
-  'codebuddy-en': ['gpt-5.6-sol', 'gpt-5.6-terra', 'gpt-5.6-luna', 'gpt-5.5', 'gpt-5.4', 'gpt-5.3-codex', 'gpt-5.1-codex', 'gemini-3.1-pro', 'gemini-3.5-flash', 'gemini-3.0-flash', 'gemini-2.5-pro', 'glm-5.3', 'glm-5.2', 'glm-5.0', 'kimi-k3', 'kimi-k2.6', 'kimi-k2.5', 'minimax-m3', 'hy3', 'deepseek-v3-2-volc'],
+  // WorkBuddyAI 自制目录（product.json 顶层 37 项，按其 credits 排序：免费的在前）
+  'codebuddy-en': ['hy3', 'gpt-5.1-codex-mini', 'gemini-3.1-flash-lite', 'gemini-2.5-flash', 'minimax-m3', 'gemini-3.0-flash', 'fast-model', 'deepseek-v3-2-volc', 'balanced-model', 'kimi-k2.5', 'kimi-k2.6', 'default-model-lite', 'glm-5.3', 'glm-5.2', 'glm-5.0', 'gpt-5.1-codex', 'gemini-2.5-pro', 'gemini-3.5-flash', 'gpt-5.3-codex', 'gemini-3.1-pro', 'gpt-5.6-terra', 'kimi-k3', 'gpt-5.4', 'primary-model', 'default-model', 'deep-model', 'gpt-5.5', 'gpt-5.6-sol', 'gpt-5.6-luna'],
+  // WorkBuddy 国内桌面自制目录（product.json：applicationName=WorkBuddy）
   'workbuddy': ['auto', 'hy4-preview', 'hy3', 'hy3-x', 'deepseek-v4.1-flash', 'glm-5.3', 'glm-5.3-flash', 'glm-5.2', 'glm-5.1', 'glm-5v-turbo', 'minimax-m3', 'minimax-m2.7', 'kimi-k3-1', 'kimi-k2.8-preview', 'kimi-k2.7', 'kimi-k2.6', 'deepseek-v4-pro']
 }
+
+// 这两个后端的候选**严格以自己安装的 product 描述文件为准**，不与静态表做并集。
+// 原因见上：并集会把另一个产品面的型号混进来（如把 npm 面的 hy4-preview /
+// deepseek-v4.1-flash 塞给 WorkBuddyAI，而后者根本没有这两个型号）。
+const BACKEND_STRICT_CATALOG = { 'codebuddy-en': true, 'workbuddy': true }
 
 // 各后端 product 描述文件的位置。
 //
@@ -242,7 +276,10 @@ export function backendModelCatalog(backend, io) {
     } catch (e) { /* 下一个候选 */ }
   }
   if (!fromFile) return known
-  // 并集：静态表在前（账号实测过的优先），文件里多出来的追加在后
+  // 桌面版（WorkBuddyAI / WorkBuddy 国内）：只认自己安装目录里的目录，绝不并集。
+  // 否则会把 npm 面的型号混进来 —— 那是另一个产品面的权限，选了只会报错。
+  if (BACKEND_STRICT_CATALOG[backend]) return fromFile
+  // npm 面：并集。静态表在前（账号实测过的优先），文件里多出来的追加在后。
   return [...known, ...fromFile.filter((id) => !known.includes(id))]
 }
 
@@ -1170,7 +1207,7 @@ export const POLICY_TEXT = [
   '',
   'Fallback protocol: when codebuddy is rate-limited or the network is down, codebuddy_run/codebuddy_continue automatically pop a confirmation dialog asking the user whether to use the DSH local API config. If the returned result has fallback=true (status FALLBACK_TO_DSH), the user chose to fall back: complete the task with native DSH tools / the local model and DO NOT call codebuddy again for this task. If ok=false without fallback, report the codebuddy error. Never loop codebuddy calls; never ask codebuddy to call back into DSH.',
   '',
-  'Model selection: codebuddy_run takes an optional model. When unspecified, the CLI default applies unless the user set a preferred default model in the plugin settings (then that is injected automatically per call). What models actually work is determined by the ACCOUNT, not by the install or the product face: the same npm CLI and the domestic WorkBuddy desktop CLI both run the same account catalogue (verified on the real machine - every model id was probed against each CLI). A model outside that catalogue fails with "400 model [...] service info not found"; a model in the catalogue but not licensed for the account fails with "400 model [...] is only available for authorized users". To get the exact live list, run the CLI with a deliberately invalid model id - the error reply prints "Currently supported models for your account:" followed by one "- <id>" per line. Measured for the account on this machine: hy4-preview, hy3, hy3-x, deepseek-v4.1-flash, glm-5.3, glm-5.3-flash, glm-5.2, glm-5.1, glm-5v-turbo, minimax-m3, kimi-k3-1, kimi-k2.8-preview, kimi-k2.7, kimi-k2.6, deepseek-v4-pro (the domestic desktop CLI additionally accepts "auto"). "codebuddy-intl" (the npm CLI on an international account) instead uses the international ids such as claude-sonnet-5, claude-opus-5, gemini-3.1-pro, gpt-5.6-sol/terra/luna - those are gated per account, so a domestic account gets the "only available for authorized users" error. "codebuddy-en" (WorkBuddyAI) additionally needs its own token before any model works. Pass a model only when the task clearly benefits from a specific one; the default is usually right. Do NOT try to choose models per product face - the face does not change availability, the account does. Optional effort: minimal/low/medium/high/xhigh/max. Optional maxTurns caps agentic turns (default unlimited).',
+  'Model selection: codebuddy_run takes an optional model. When unspecified, the CLI default applies unless the user set a preferred default model in the plugin settings (then that is injected automatically per call). Which models exist depends on WHICH PRODUCT FACE supplies them, so do not treat the four backends as one pool: "codebuddy" and "codebuddy-intl" are the npm CLI and offer its catalogue - including the free tier (hy3 and deepseek-v4.1-flash cost x0.00 credits; hy4-preview costs x0.29 but is frequently free on promotional accounts); "codebuddy-en" (WorkBuddyAI) has its OWN catalogue which does NOT contain hy4-preview or deepseek-v4.1-flash - it offers hy3 (free), gpt-5.1-codex-mini, gemini-3.1-flash-lite, gemini-2.5-flash, minimax-m3, gemini-3.0-flash, deepseek-v3-2-volc, kimi-k2.5/2.6, glm-5.0/5.2/5.3, gpt-5.3-codex, gpt-5.4/5.5, gpt-5.6-sol/terra/luna and the role aliases (fast/balanced/primary/deep-model); "workbuddy" (domestic desktop) has a further catalogue (auto, hy4-preview, hy3, deepseek-v4.1-flash, glm-5.x, kimi-k2.6/2.7/2.8-preview/k3-1, minimax-m3/m2.7, deepseek-v4-pro). Within a face availability is still gated per ACCOUNT: an id outside the account catalogue fails with "400 model [...] service info not found", and one inside it but unlicensed fails with "400 model [...] is only available for authorized users". International ids (claude-sonnet-5, claude-opus-5, gemini-3.1-pro, ...) are per-account gated and return the latter for a domestic account. To get the exact live list for a CLI, run it with a deliberately invalid model id - the reply prints "Currently supported models for your account:" followed by one "- <id>" per line (core exposes parseAccountModels for this). Pass a model only when the task clearly benefits from a specific one; the default is usually right. Optional effort: minimal/low/medium/high/xhigh/max. Optional maxTurns caps agentic turns (default unlimited).',
   '',
   'Backends: codebuddy_run/codebuddy_continue take an optional backend parameter choosing which CLI face of the same engine (Tencent CodeBuddy Code) runs the task. "codebuddy" is the domestic CodeBuddy (npm CLI @tencent-ai/codebuddy-code, product endpoint www.codebuddy.ai) — default for coding work. "codebuddy-intl" is the INTERNATIONAL face of that SAME npm CLI (product.ioa.json catalogue: claude-sonnet-5, claude-opus-5, gemini-3.1-pro, gpt-6-astra, hy3-ioa …); use it when the account is an international CodeBuddy account. Its aliases "codebuddy-ioa" and "codebuddy-international" are accepted and normalized to codebuddy-intl. "codebuddy-en" is the WorkBuddy INTERNATIONAL edition — the CLI bundled with the WorkBuddyAI desktop app (C:\\Program Files\\WorkBuddyAI, product endpoint www.workbuddy.ai); the aliases "workbuddy-en" and "workbuddy-ai" are also accepted and normalized to codebuddy-en. "workbuddy" is the CLI bundled with the domestic WorkBuddy desktop app (product endpoint copilot.tencent.com, zero config) — the office-scenario face: documents, slides, spreadsheets, knowledge-base lookups, image/video generation, WeChat/WeCom replies. When the user asks for office/document/IM work, dispatch with backend="workbuddy"; for international accounts use "codebuddy-intl" (CodeBuddy 国际版) or "codebuddy-en" (WorkBuddy 国际版 / WorkBuddyAI). Sessions are kept per backend (login domains are exclusive), and continuing a session automatically routes back to the backend that owns it (explicit backend wins). A user-preferred default backend (plugin settings) applies when a call is new (no session) and no explicit backend is given.'
 ].join('\n')
