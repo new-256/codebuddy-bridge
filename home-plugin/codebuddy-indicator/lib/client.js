@@ -93,7 +93,11 @@ window.__ModuleLoader__.load({
       ".cbs-rate-free{color:var(--dsw-static-green-500,#22c55e);border:1px solid var(--dsw-static-green-500,#22c55e)}",
       ".cbs-rate-unknown{color:var(--dsw-alias-label-tertiary,var(--dsw-alias-label-secondary));border:1px dashed var(--dsw-alias-border-l1)}",
 
-    ".cbs-rate-promo{color:var(--dsw-static-orange-500,#f59e0b);border:1px solid var(--dsw-static-orange-500,#f59e0b);}",      ".cbs-rate-ids{font-family:Consolas,Menlo,monospace;color:var(--dsw-alias-label-secondary);word-break:break-all}",
+    ".cbs-rate-promo{color:var(--dsw-static-orange-500,#f59e0b);border:1px solid var(--dsw-static-orange-500,#f59e0b);}",
+    ".cbs-rate-ids{font-family:Consolas,Menlo,monospace;color:var(--dsw-alias-label-secondary);word-break:break-all}",
+    // v1.6.2：默认模型改用显式 select（不再用会被输入文字过滤的 datalist）
+    ".cbs-model-pick{display:flex;flex-direction:column;gap:6px}",
+    ".cbs-model-custom{font-family:Consolas,Menlo,monospace}",
       ".cbs-badge{display:inline-flex;align-items:center;gap:4px;height:18px;padding:0 7px;border-radius:9px;font-size:11px;white-space:nowrap}",
       ".cbs-badge-ok{color:var(--dsw-static-green-500,#22c55e);border:1px solid var(--dsw-static-green-500,#22c55e)}",
       ".cbs-badge-warn{color:var(--dsw-alias-state-warn-primary);border:1px solid var(--dsw-alias-state-warn-primary)}",
@@ -421,9 +425,26 @@ window.__ModuleLoader__.load({
               react.createElement("div", { className: "cbs-note" }, "会话里显式传 backend 参数时仍以参数为准；此处只影响缺省派发。")),
             react.createElement("label", { className: "cbs-label", htmlFor: "cbs-model" }, "默认模型"),
             react.createElement("div", { className: "cbs-ctl" },
-              react.createElement("input", { id: "cbs-model", className: "cbs-input", list: "cbs-model-list", value: form.defaultModel, onChange: setField("defaultModel"), placeholder: "留空 = 各 CLI 自身默认", spellCheck: false }),
-              react.createElement("datalist", { id: "cbs-model-list" }, usable.slice(0, 60).map(function (o) { return react.createElement("option", { key: o.id, value: o.id, label: o.label }); })),
-              react.createElement("div", { className: "cbs-note" }, "候选来自该后端自己的模型目录（CLI 运行时真正加载的 product 描述文件）；标「未授权」的型号本账号无权限，选中会报 400。也可手输任意 CLI 支持的模型 id。"),
+              (function () {
+                const CUSTOM = "__cbs_custom__";
+                const isKnown = usable.some(function (o) { return o.id === form.defaultModel; });
+                const custom = form.defaultModel !== "" && !isKnown;
+                const sel = custom ? CUSTOM : form.defaultModel;
+                const onPick = function (e) {
+                  const v = e.target.value;
+                  setField("defaultModel")({ target: { value: v === CUSTOM ? "" : v } });
+                };
+                return react.createElement("div", { className: "cbs-model-pick" },
+                  react.createElement("select", { id: "cbs-model", className: "cbs-select", value: sel, onChange: onPick },
+                    react.createElement("option", { key: "__empty", value: "" }, "（留空 = 各 CLI 自身默认）"),
+                    usable.map(function (o) { return react.createElement("option", { key: o.id, value: o.id }, o.label); }),
+                    react.createElement("option", { key: "__custom", value: CUSTOM }, "自定义…（手动输入 model id）")),
+                  (custom || sel === CUSTOM) ? react.createElement("input", {
+                    className: "cbs-input cbs-model-custom", value: form.defaultModel,
+                    onChange: setField("defaultModel"), placeholder: "手动输入 model id", spellCheck: false
+                  }) : null);
+              })(),
+              react.createElement("div", { className: "cbs-note" }, "候选来自该后端**账号级配置**（与 CLI 菜单一致，含限时优惠标注），共 " + usable.length + " 项。标「未授权」的型号本账号无权限，选中会报 400；需用列表外的 id 时选「自定义…」手动输入。"),
               // v1.5.0：倍率一览 —— 让用户能精确判断成本。倍率随 CLI 描述文件实时同步。
               // v1.6.0：只统计「本账号可用」的型号，并把未授权的单独列成一行。
               opts.length ? react.createElement("div", { className: "cbs-rates" },
