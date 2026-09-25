@@ -2,6 +2,55 @@
 
 本项目遵循 [语义化版本](https://semver.org/)；版本号同步 `package.json`、Git tag 与 GitHub Release（`npm run check` 中的 `scripts/verify.mjs` 在 CI 里锁三处一致）。
 
+## [1.6.1] - 2026-09-25
+
+### 修复
+- **数据源层次仍然不对：「安装目录的 product.json」不是用户菜单（v1.6.0 的遗留错误）**。
+  用户指出 v1.6.0 的输出与实际菜单不符 ——「WorkBuddy 国际版的免费项是 Hy4 preview / Hy3 /
+  Deepseek-V4.1-Flash（都是 Free now 0.00x），国内版是 Hy4 preview（夜间免费 0.29x）与
+  Hy3（限时免费 0.00x）」，**核实后确认用户是对的**，v1.6.0 读的层从头就偏了。
+
+  真正的三层结构（实测）：
+  | 层 | 位置 | 作用 |
+  |---|---|---|
+  | ① | 安装目录 `product.json` / `product.ioa.json` | **产品面默认值**（v1.6.0 唯一读的层） |
+  | ② | `~/.workbuddy`、`~/.workbuddy-ai` 的 `cache/acc-product-config-v3.json` | 账号级配置，**含 `modelPromotions`** |
+  | ③ | 同目录 `local_storage/entry_*.info` | 桌面客户端实时快照，**用户菜单看到的就是它** |
+
+  关键证据：用户菜单里的「**Free now**」「**夜间免费**」「**限时免费**」全部来自
+  `modelPromotions`，而**安装目录的 product.json 根本没有这个字段** —— 所以无论怎么读
+  那个文件，都不可能显示出用户看到的东西。
+
+  - 新增 `accountConfigCandidates()`：把账号级配置排到候选链**最前**，安装目录描述文件降为兜底。
+  - 新增 `normalizeProductConfig()`：账号文件有**两种形态** —— `cache/` 是裸 product 对象，
+    `local_storage/entry_*.info` 是 `[{userId, data}, …]` 数组（本机国际版文件里有
+    527fed08 与 dc632238 **两个账号**的配置）。取数组**末尾**一份（最新写入在末尾）。
+  - 新增 `extractModelPromotions()` / `isPromotionActive()` / `activePromotionFor()`：
+    解析促销并**按有效期 + 跨零点时段**判定是否生效（「夜间免费」为 23:00–次日 8:00）。
+  - `parseCreditValue()` 补认 `"0.00x"` / `"0x"` 写法 —— 促销价的数字在前、x 在后，
+    与 `credits` 字段的 `"x0.29 credits"` **恰好相反**，不兼容会漏掉「Free now」的价格。
+  - 候选链改为**按字段各自取第一个有内容的文件**，而不是取第一个能读到的：实测国际版
+    `cache/` 停在旧时间点（37 项、**无促销、且没有 hy4-preview / deepseek-v4.1-flash**），
+    却排在链首，会遮蔽后面更新的 `local_storage` 快照（26 项、含三条 Free now）。
+
+### 实测结果（与用户菜单逐条吻合）
+- `workbuddy`（国内版，53 项）：`hy3 · 免费 · 限时免费`、`hy4-preview · x0.29 · 夜间免费`
+  （白天只挂角标不折扣、夜间 factor=0 转免费，与菜单的「夜间免费 0.29x」一致）、
+  `deepseek-v4-pro · 夜间折扣`、`glm-5.2 · 夜间折扣`。
+- `codebuddy-en`（国际版，26 项）：`hy3` / `hy4-preview-f` / `deepseek-v4.1-flash`
+  三条均为 `免费 · Free now` —— **与用户描述完全一致**。
+
+### 变更
+- 面板新增「限时优惠 ×N」一行，列出**当前生效**的促销及其名称，与 CLI 菜单对齐；
+  下拉标签形如 `hy4-preview · x0.29 · 夜间免费`。`baseCredits`（原价）一并透传，
+  便于判断促销力度。
+
+### 测试
+- 148 → **155** 通过。新增 7 例：`normalizeProductConfig` 双形态、`extractModelPromotions`
+  展开与跳过规则、`isPromotionActive` 有效期与跨零点边界（8:00 整点为开区间）、
+  `activePromotionFor` 多条的 priority 取舍、`parseCreditValue` 双写法、
+  `modelCatalogDetailed` 促销计价与标签、以及**旧缓存遮蔽更新快照**的真实场景回归。
+
 ## [1.6.0] - 2026-09-25
 
 ### 修复

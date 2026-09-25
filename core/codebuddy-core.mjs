@@ -202,10 +202,54 @@ const // 各后端真正生效的 product 描述文件。
 //   rel 按「先 ioa 变体、后裸 product.json 兜底」排列：若某安装没有 ioa 变体
 //   （如 WorkBuddyAI），候选链会自然落到 product.json。
 PRODUCT_DESCRIPTOR_ENV = {
-  'codebuddy': { env: 'CODEBUDDY_MODELS_FILE', rel: 'product.ioa.json', fallbackRel: 'product.json' },
-  'codebuddy-intl': { env: 'CODEBUDDY_INTL_MODELS_FILE', rel: 'product.ioa.json', fallbackRel: 'product.json' },
-  'codebuddy-en': { env: 'CODEBUDDY_EN_MODELS_FILE', rel: 'product.ioa.json', fallbackRel: 'product.json' },
-  'workbuddy': { env: 'WORKBUDDY_MODELS_FILE', rel: 'product.ioa.json', fallbackRel: 'product.json' }
+  'codebuddy': { env: 'CODEBUDDY_MODELS_FILE', rel: 'product.ioa.json', fallbackRel: 'product.json', accountDir: null },
+  'codebuddy-intl': { env: 'CODEBUDDY_INTL_MODELS_FILE', rel: 'product.ioa.json', fallbackRel: 'product.json', accountDir: null },
+  'codebuddy-en': { env: 'CODEBUDDY_EN_MODELS_FILE', rel: 'product.ioa.json', fallbackRel: 'product.json', accountDir: '.workbuddy-ai' },
+  'workbuddy': { env: 'WORKBUDDY_MODELS_FILE', rel: 'product.ioa.json', fallbackRel: 'product.json', accountDir: '.workbuddy' }
+}
+
+/**
+ * 各后端的 product 描述文件的候选路径（按序尝试，返回第一个能读到的）。
+ *
+ * ★ v1.6.1 关键修正：安装目录里的 product.json 只是**产品面默认值**，不是用户菜单。
+ *   用户实际看到的菜单来自**账号级配置**，它在桌面客户端的数据目录里：
+ *     ~/.workbuddy-ai/cache/acc-product-config-v3.json   （WorkBuddy AI 国际版，
+ *        applicationName=workbuddy-ai, endpoint=www.workbuddy.ai, networkEnvironment=external）
+ *     ~/.workbuddy/cache/acc-product-config-v3.json      （WorkBuddy 国内版，
+ *        applicationName=WorkBuddy, endpoint=copilot.tencent.com, networkEnvironment=internal）
+ *   账号配置才带 `modelPromotions` —— 用户菜单里的「Free now / 夜间免费 / 限时免费」
+ *   全部出自这里，而安装目录的 product.json 里**根本没有该字段**。
+ *   实测（用户贴图逐条吻合）：
+ *     国内版 hy4-preview：基础 x0.29 + promotion「夜间免费」factor=0
+ *     国内版 hy3        ：基础 x0.00 + promotion「限时免费」factor=0
+ *     国际版 hy3 / hy4-preview / deepseek-v4.1-flash：promotion「Free now」factor=0
+ *   候选链因此改为「账号配置在前、产品面描述文件兜底」。
+ *
+ * `rel` 仍是安装目录内的相对路径（v1.6.0 修正：CLI 读的是 `product.${env}.json`，
+ * 见上方注释）；`accountDir` 是该后端的账号配置目录（相对用户主目录），
+ * 由上方的 PRODUCT_DESCRIPTOR_ENV 统一声明，此处不再重复定义。
+ */
+
+/**
+ * 账号级配置文件的候选路径（v1.6.1 新增）。
+ * 顺序：cache/acc-product-config-v3.json（客户端缓存）→ local_storage 快照。
+ * npm 面（codebuddy / codebuddy-intl）走 CodeBuddy 桌面，无账号配置文件，返回空。
+ */
+function accountConfigCandidates(backend) {
+  const env = (globalThis.process && globalThis.process.env) || {}
+  const spec = PRODUCT_DESCRIPTOR_ENV[backend]
+  const path = builtinPath()
+  if (!spec || !spec.accountDir || !path) return []
+  const rel = spec.accountDir.split('/').join(path.sep)
+  // 用户主目录：优先 USERPROFILE（Windows），退化 HOME（跨平台/测试注入）
+  const home = env.USERPROFILE || env.HOME
+  if (!home) return []
+  const base = path.join(home, rel)
+  return [
+    path.join(base, 'cache', 'acc-product-config-v3.json'),
+    path.join(base, 'local_storage', 'entry_d43e96994f944cfb77961c2ea7d04605.info'),
+    path.join(base, 'local_storage', 'wb_entry_d43e96994f944cfb77961c2ea7d04605.info')
+  ]
 }
 
 /** 各后端 product 描述文件的候选路径（按序尝试，返回第一个存在的）。 */
@@ -214,6 +258,8 @@ function productDescriptorCandidates(backend) {
   const spec = PRODUCT_DESCRIPTOR_ENV[backend]
   if (!spec) return []
   const out = []
+  // 账号级配置优先（带 modelPromotions，与用户菜单一致）
+  for (const p of accountConfigCandidates(backend)) out.push(p)
   if (env[spec.env]) out.push(env[spec.env])
   const path = builtinPath()
   const join = path ? path.join : null
@@ -252,7 +298,7 @@ function builtinPath() {
  */
 export function extractModelIds(productJson) {
   try {
-    const obj = typeof productJson === 'string' ? JSON.parse(productJson) : productJson
+    const obj = normalizeProductConfig(productJson)
     if (!obj || typeof obj !== 'object') return null
     const pick = (arr) => {
       if (!Array.isArray(arr) || !arr.length) return null
@@ -265,6 +311,36 @@ export function extractModelIds(productJson) {
     const fromTop = pick(obj.models)
     if (fromCli && fromTop) return fromTop.length > fromCli.length ? fromTop : fromCli
     return fromCli || fromTop || null
+  } catch (e) { return null }
+}
+
+/**
+ * 归一化账号配置：可能是**单个** product 对象，也可能是**数组**。
+ *
+ * 实测（v1.6.1）：桌面客户端的 `local_storage/entry_*.info` 顶层是
+ *   [ { userId, data: <product 对象> }, { userId, data: <product 对象> }, ... ]
+ * 每个 userId 一份独立配置（本机国际版文件里有 527fed08 与 dc632238 两个账号）。
+ * 取**最后一份**（最新的写入在末尾）。而 `cache/acc-product-config-v3.json`
+ * 是裸的单个 product 对象。两种形态都要能解析。
+ *
+ * @returns {object|null} 归一化后的 product 对象
+ */
+export function normalizeProductConfig(raw) {
+  try {
+    const obj = typeof raw === 'string' ? JSON.parse(raw) : raw
+    if (!obj) return null
+    if (Array.isArray(obj)) {
+      // 数组形态：从后往前找第一个带 data 的条目（末尾最新）
+      for (let i = obj.length - 1; i >= 0; i--) {
+        const e = obj[i]
+        if (e && typeof e === 'object' && e.data && typeof e.data === 'object') return e.data
+      }
+      return null
+    }
+    if (typeof obj !== 'object') return null
+    // 单个对象：若本身是 { data: {...} } 形态也剥一层
+    if (obj.data && typeof obj.data === 'object' && !Array.isArray(obj.models) && !Array.isArray(obj.agents)) return obj.data
+    return obj
   } catch (e) { return null }
 }
 
@@ -282,7 +358,7 @@ export function extractModelIds(productJson) {
  */
 export function extractModelCredits(productJson) {
   try {
-    const obj = typeof productJson === 'string' ? JSON.parse(productJson) : productJson
+    const obj = normalizeProductConfig(productJson)
     if (!obj || typeof obj !== 'object' || !Array.isArray(obj.models)) return null
     const map = new Map()
     for (const m of obj.models) {
@@ -302,7 +378,12 @@ export function extractModelCredits(productJson) {
  */
 export function parseCreditValue(raw) {
   if (typeof raw !== 'string') return null
-  const m = raw.trim().match(/^[xX×]\s*([0-9]+(?:\.[0-9]+)?)/)
+  const s = raw.trim()
+  // 形态一（描述文件/账号配置的 models[].credits）：`x0.29 credits`、`x0.00`
+  let m = s.match(/^[xX×]\s*([0-9]+(?:\.[0-9]+)?)/)
+  // 形态二（账号配置 modelPromotions[].discount.discountedCredits）：`0.00x`、`0x`
+  // —— 数字在前、x 在后，与形态一恰好相反，不兼容会漏掉「Free now」这类促销价。
+  if (!m) m = s.match(/^([0-9]+(?:\.[0-9]+)?)\s*[xX×]/)
   if (!m) return null
   const n = Number(m[1])
   return Number.isFinite(n) ? n : null
@@ -343,13 +424,27 @@ export function backendModelCatalog(backend, io) {
     return fs.readFileSync(p, enc)
   })
   let fromFile = null
+  let fromFileRich = null
+  // ★ v1.6.1：账号配置排在候选链最前（见 productDescriptorCandidates），
+  //   所以这里取到的就是用户菜单实际使用的清单。
+  //
+  //   但**不能只认第一份**：实测国际版 cache/acc-product-config-v3.json 停在
+  //   旧时间点（37 项、无促销、且**没有 hy4-preview / deepseek-v4.1-flash**），
+  //   而更新的 local_storage 快照（26 项）才带这三条 Free now 促销 ——
+  //   后者才是用户菜单看到的。因此同时记录「第一份有内容的」与「第一份带促销的」，
+  //   优先取后者：modelPromotions 是账号级配置独有的字段，有它说明该文件更新。
   for (const p of productDescriptorCandidates(backend)) {
-    try {
-      const ids = extractModelIds(read(p, 'utf8'))
-      if (ids && ids.length) { fromFile = ids; break }
-    } catch (e) { /* 下一个候选 */ }
+    let txt = null
+    try { txt = read(p, 'utf8') } catch (e) { continue }
+    const ids = extractModelIds(txt)
+    if (ids && ids.length) {
+      if (!fromFile) fromFile = ids
+      if (!fromFileRich && extractModelPromotions(txt)) fromFileRich = ids
+    }
+    if (fromFileRich) break
   }
   if (!fromFile) return known
+  const fromFileIds = fromFileRich || fromFile
   // ★ v1.6.0：四个后端一律**以自己安装的描述文件为准**，不再对 npm 面做静态表并集。
   //
   // 理由：v1.5.0 之前把「静态实测表」排在前、文件内容追加在后，结果是两处都不准 ——
@@ -359,11 +454,124 @@ export function backendModelCatalog(backend, io) {
   // 静态表降级为「读不到文件时的兜底」，只在 fromFile 为 null 时生效（见上方 return known）。
   //
   // 账号级授权仍由服务端实时裁决（parseAccountModels / 400 报文），与本表无关。
-  return fromFile
+  return fromFileIds
 }
 
 /** 兼容旧名（v1.4.0 引入时的函数名）。 */
 export const readBackendModelCatalog = backendModelCatalog
+
+/**
+ * 从账号级配置里抽取**促销**规则（v1.6.1 新增）。
+ *
+ * 用户菜单里的「Free now / 夜间免费 / 限时免费」全部出自账号配置的
+ * `modelPromotions` 数组，而安装目录的 product.json **没有该字段** —— 这正是
+ * 此前「模型获取错误」的最后一层：基础倍率读对了，促销一律看不到。
+ *
+ * 单条结构（实测）：
+ *   { badge: { label:'夜间免费', color:'#1E90FF' },
+ *     discount: { discountedCredits:'0.00x', factor:0, displayMode:'strikethrough' },
+ *     enabled: true,
+ *     modelIds: ['hy4-preview','hy4-preview-dev'],
+ *     schedule: { daily:[{start:'23:00',end:'8:00'}], timezone:'Asia/Shanghai',
+ *                 validFrom:'2026-09-11T00:00:00+08:00', validUntil:'2026-11-01T00:00:00+08:00' } }
+ *
+ * 同一型号可能有多条（一条负责时段内、一条负责时段外显示角标），调用方按优先级取。
+ *
+ * @returns {Array<{id:string,label:string,color:string,factor:number|null,
+ *                  discountedCredits:string|null,priority:number,schedule:object|null}>|null}
+ */
+export function extractModelPromotions(configJson) {
+  try {
+    const obj = normalizeProductConfig(configJson)
+    if (!obj || typeof obj !== 'object' || !Array.isArray(obj.modelPromotions)) return null
+    const out = []
+    for (const p of obj.modelPromotions) {
+      if (!p || typeof p !== 'object' || p.enabled === false) continue
+      const label = (p.badge && typeof p.badge.label === 'string') ? p.badge.label.trim() : ''
+      const ids = Array.isArray(p.modelIds) ? p.modelIds : []
+      if (!label || !ids.length) continue
+      const d = (p.discount && typeof p.discount === 'object') ? p.discount : null
+      const factor = (d && typeof d.factor === 'number' && Number.isFinite(d.factor)) ? d.factor : null
+      const raw = (d && typeof d.discountedCredits === 'string') ? d.discountedCredits.trim() : null
+      for (const id of ids) {
+        if (typeof id !== 'string' || !id.trim()) continue
+        out.push({
+          id: id.trim(),
+          label,
+          color: (p.badge && typeof p.badge.color === 'string') ? p.badge.color : '',
+          factor,
+          discountedCredits: raw,
+          priority: Number.isFinite(p.priority) ? p.priority : 0,
+          schedule: (p.schedule && typeof p.schedule === 'object') ? p.schedule : null
+        })
+      }
+    }
+    return out.length ? out : null
+  } catch (e) { return null }
+}
+
+/**
+ * 判断一条促销在给定时刻是否**正在生效**（v1.6.1 新增）。
+ *
+ * 判定分两段，都要过：
+ *   1. 有效期 validFrom/validUntil（闭区间外即失效）；
+ *   2. 时段：schedule.daily 是一组 {start,end} 的 'HH:MM' 区间，可跨零点
+ *      （实测「夜间免费」为 [{start:'23:00',end:'8:00'}]，跨零点）；
+ *      无 daily 字段表示全天有效（如「限时免费」validFrom 7/6–validUntil 11/01）。
+ *
+ * 时区按 schedule.timezone 处理，但为避免依赖 Intl 的时区数据库（preset/dynamic
+ * 沙箱里不可用），这里用**本地时间**近似：本机即 Asia/Shanghai，实测一致。
+ * 这是有意的取舍 —— 宁可时段判定在跨时区机器上偏保守，也不要因缺失 API 而抛错。
+ *
+ * @param {object} promo extractModelPromotions 的单项
+ * @param {Date} [now] 注入当前时间（测试用）
+ */
+export function isPromotionActive(promo, now) {
+  if (!promo) return false
+  const t = (now instanceof Date) ? now : new Date()
+  const ms = t.getTime()
+  if (!Number.isFinite(ms)) return false
+  const sch = promo.schedule
+  if (!sch) return true
+  const vf = Date.parse(sch.validFrom)
+  const vu = Date.parse(sch.validUntil)
+  if (Number.isFinite(vf) && ms < vf) return false
+  if (Number.isFinite(vu) && ms >= vu) return false
+  const daily = Array.isArray(sch.daily) ? sch.daily : null
+  if (!daily || !daily.length) return true
+  const cur = t.getHours() * 60 + t.getMinutes()
+  const toMin = (s) => {
+    const m = String(s || '').match(/^(\d{1,2}):(\d{2})/)
+    if (!m) return null
+    const v = Number(m[1]) * 60 + Number(m[2])
+    return Number.isFinite(v) ? v : null
+  }
+  for (const w of daily) {
+    if (!w || typeof w !== 'object') continue
+    const st = toMin(w.start)
+    const en = toMin(w.end)
+    if (st === null || en === null) continue
+    // 跨零点：start > end 时区间为 [start, 1440) ∪ [0, end)
+    if (st <= en) { if (cur >= st && cur < en) return true } else if (cur >= st || cur < en) return true
+  }
+  return false
+}
+
+/**
+ * 取某型号**当前生效**的促销标签（多条命中时取 priority 最大者）。
+ * @returns {{label:string,color:string,factor:number|null,discountedCredits:string|null}|null}
+ */
+export function activePromotionFor(promotions, id, now) {
+  if (!Array.isArray(promotions) || !id) return null
+  let best = null
+  for (const p of promotions) {
+    if (!p || p.id !== id) continue
+    if (!isPromotionActive(p, now)) continue
+    if (!best || (p.priority || 0) > (best.priority || 0)) best = p
+  }
+  if (!best) return null
+  return { label: best.label, color: best.color, factor: best.factor, discountedCredits: best.discountedCredits }
+}
 
 /**
  * 从 CLI 报错里解析服务端返回的「该账号当前支持的模型」清单。
@@ -494,25 +702,60 @@ export function modelCatalogDetailed(backend, io) {
     return fs.readFileSync(p, enc)
   })
   let creditsMap = null
+  let promotions = null
+  // ★ v1.6.1：倍率与促销都从**同一个**候选链取，但各自独立扫描 ——
+  //   账号配置（带 modelPromotions）排在最前，若它不含 credits 字段
+  //   （实测国际版 local_storage 有 credits、国内版 acc-product-config 也有），
+  //   则继续往下找到能提供该字段的那份，两种数据可来自不同文件。
+  //
+  //   注意：**不能读到一份就 break**。实测国际版的 cache/acc-product-config-v3.json
+  //   可能停在很旧的时间点（本机为 01:33，无 modelPromotions、无 hy4-preview），
+  //   而它在候选链里排第一，会遮蔽后面更新的 local_storage 快照。因此这里扫完
+  //   整条链、按字段各自取第一个「有内容」的结果，而不是取第一个能读到的文件。
   for (const p of productDescriptorCandidates(backend)) {
-    try {
-      const map = extractModelCredits(read(p, 'utf8'))
-      if (map) { creditsMap = map; break }
-    } catch (e) { /* 下一个候选 */ }
+    let txt = null
+    try { txt = read(p, 'utf8') } catch (e) { continue }
+    if (!creditsMap) {
+      const map = extractModelCredits(txt)
+      if (map) creditsMap = map
+    }
+    if (!promotions) {
+      const promo = extractModelPromotions(txt)
+      if (promo) promotions = promo
+    }
+    if (creditsMap && promotions) break
   }
+  const now = (io && io.now instanceof Date) ? io.now : new Date()
   const items = ids.map((id) => {
-    const credits = lookupModelCredits(creditsMap, id)
+    // 促销优先参与倍率计算：命中时以促销价为实付（factor=0 即免费），
+    // 这样「夜间免费」「Free now」的型号会正确落到免费段。
+    const promo = activePromotionFor(promotions, id, now)
+    const base = lookupModelCredits(creditsMap, id)
+    let credits = base
+    if (promo) {
+      if (promo.factor !== null) {
+        // factor 是折扣系数（0=免费，0.5=五折）。基价缺失时无法相乘，退回促销标注值。
+        credits = (typeof base === 'number') ? base * promo.factor : parseCreditValue(promo.discountedCredits || '')
+      } else {
+        const d = parseCreditValue(promo.discountedCredits || '')
+        if (d !== null) credits = d
+      }
+    }
     const hasCredits = typeof credits === 'number'
     const suffix = formatCreditLabel(credits)
     const marks = []
     if (suffix) marks.push(suffix)
+    // ★ v1.6.1：促销标签紧跟倍率之后（用户菜单里的「Free now / 夜间免费 / 限时免费」）
+    if (promo) marks.push(promo.label)
     if (acct && !authorized.has(id)) marks.push('未授权')
     return {
       id,
       credits,
+      baseCredits: base,
       free: hasCredits && credits === 0,
       hasCredits,
       authorized: acct ? authorized.has(id) : null,
+      promotion: promo,
       label: marks.length ? `${id} · ${marks.join(' · ')}` : id
     }
   })
@@ -751,7 +994,9 @@ export function backendSettingsMeta(backend, io) {
     // v1.6.0：附带 authorized —— true=账号已授权（实测可用）、false=目录里有但本账号无权限、
     //         null=尚未探测过。面板据此把不可用的型号挡在下拉之外并单列「未授权」。
     modelOptions: detailed.map((x) => ({
-      id: x.id, label: x.label, credits: x.credits, free: x.free, hasCredits: x.hasCredits, authorized: x.authorized
+      id: x.id, label: x.label, credits: x.credits, free: x.free, hasCredits: x.hasCredits, authorized: x.authorized,
+      // v1.6.1：把当前生效的促销透传给面板（用于「限时优惠」一览那一行）
+      promotion: x.promotion || null, baseCredits: typeof x.baseCredits === 'number' ? x.baseCredits : null
     })),
     productEndpoint: BACKEND_ENDPOINTS[backend] || null,
     needsToken: backend === 'codebuddy-en'

@@ -52,16 +52,31 @@
 | `codebuddy-en`（v1.3.3 显示名「WorkBuddy 国际版（WorkBuddyAI 桌面 CLI）」；别名 `workbuddy-en` / `workbuddy-ai` 归一到该规范 id） | WorkBuddy 国际版（WorkBuddyAI）桌面版（`C:\Program Files\WorkBuddyAI`） | `www.workbuddy.ai` | **凭据自动复用**：设置面板 `codebuddyEnToken` → 环境变量 `CODEBUDDY_AUTH_TOKEN` → DSH 凭据库（`.credentials.yaml`/`.env` 的 `WORKBUDDY_TOKEN`）；三条通道皆空才 `AUTH_REQUIRED` |
 | `workbuddy` | WorkBuddy 桌面版（`C:\Program Files\WorkBuddy`） | `copilot.tencent.com` | 已登录即用（端点按登录域自动对齐） |
 
-**模型清单（v1.6.0 起）**：候选模型不再硬编码，改为**运行时**从各安装**真正被 CLI 加载的那份** product 描述文件读取。
-关键修正：CLI 加载的是 **`product.${env}.json`**（`env` 由 `CODEBUDDY_INTERNET_ENVIRONMENT` / settings 的 `env` / 账号的
-`productConfigEnv` 决定，本机解析为 `ioa`），读取失败才回退 `product.json`；v1.6.0 之前一律只读后者，是模型清单反复出错的根因。
+**模型清单（v1.6.1 起）**：候选模型不再硬编码，改为**运行时**按三层依次回退读取。
+关键在于**读对层次**——v1.6.0 读的是第①层，那只是产品面出厂默认值，**没有 `modelPromotions` 字段**，
+因此无论怎么修「读哪个文件」都显示不出用户菜单里的「Free now / 夜间免费 / 限时免费」：
+
+| 层 | 位置 | 内容 |
+|---|---|---|
+| ① 产品面默认值 | 安装目录 `product.${env}.json`（`env` 由 `CODEBUDDY_INTERNET_ENVIRONMENT` / settings 的 `env` / 账号 `productConfigEnv` 决定，本机为 `ioa`），失败回退 `product.json` | 出厂目录，**无促销** |
+| ② 账号级配置 | `~/.workbuddy`、`~/.workbuddy-ai` 的 `cache/acc-product-config-v3.json` | 账号专属，**含 `modelPromotions`** |
+| ③ 客户端实时快照 | 同目录 `local_storage/entry_*.info` | **用户菜单看到的就是这层** |
+
+按 ②→③→① 回退，**逐字段独立取值**（倍率与促销可来自不同文件）。两个坑：`entry_*.info` 顶层是
+`[{userId, data}, …]` **数组**（一个文件可含多账号，取末尾最新一份），`cache/` 里则是裸对象；
+国际版 `cache/` 可能**停在很旧的时间点**（本机 37 项、无促销、且没有 `hy4-preview` / `deepseek-v4.1-flash`）
+却排在链首，会遮蔽更新的 `local_storage` 快照（26 项）——故候选链取「**按字段第一个有内容的文件**」，
+并优先带促销的那份；促销价的写法 `0.00x`（数字在前）与 `credits` 的 `x0.29 credits`（x 在前）相反，两者都认。
+**促销按时段生效**：「夜间免费」23:00–次日 8:00、`factor=0`；「限时免费」无时段限制。面板只显示当前生效者。
+
 **描述文件只是「目录」，不是「可用清单」**：其中的 `-ioa` 命名对多数账号 `400 only available for authorized users`。
 因此 v1.6.0 把 `parseAccountModels()` 接进真实调用路径（400 报文里含服务端权威清单，缓存复用、零额外开销），
 面板只列**本账号已授权**的型号，并把目录独有项标为「未授权」。
 
-实测（2026-09-25，本机）：描述文件解析项数 `codebuddy` = 67、`codebuddy-intl` = 53、`codebuddy-en` = 37、`workbuddy` = 93；
-而**账号可用**清单为 `codebuddy` / `codebuddy-intl` / `workbuddy` 各 16 个（`codebuddy-en` 未登录，回退其自带目录 37 项），
-16 个可用型号全部挂上倍率（数据源为 `models[].credits`，`lookupModelCredits()` 负责跨 `-ioa` 命名与别名匹配）。
+实测（2026-09-25，本机）：`workbuddy` 53 项，含 `hy3 · 免费 · 限时免费`、`hy4-preview · x0.29 · 夜间免费`；
+`codebuddy-en` 26 项，`hy3` / `hy4-preview-f` / `deepseek-v4.1-flash` 三条均为 `免费 · Free now`；
+`codebuddy` / `codebuddy-intl` 本机无账号级配置，走目录层（各 53 项，无促销）。
+倍率数据源为 `models[].credits`，`lookupModelCredits()` 负责跨 `-ioa` 命名与别名匹配。
 
 设置键（v1.3.1）：`preferredBackend` / `defaultModel` / `codebuddyEnToken` / `endpointOverride`
 （`codebuddyEnBaseUrl` 已移除——其默认值 `https://www.workbuddy.ai/v2` 对默认后端是错的）。

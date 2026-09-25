@@ -92,7 +92,8 @@ window.__ModuleLoader__.load({
       ".cbs-rate-tag{flex:none;font-family:Consolas,Menlo,monospace;padding:0 5px;border-radius:4px;background:var(--dsw-alias-bg-layer-2);color:var(--dsw-alias-label-secondary)}",
       ".cbs-rate-free{color:var(--dsw-static-green-500,#22c55e);border:1px solid var(--dsw-static-green-500,#22c55e)}",
       ".cbs-rate-unknown{color:var(--dsw-alias-label-tertiary,var(--dsw-alias-label-secondary));border:1px dashed var(--dsw-alias-border-l1)}",
-      ".cbs-rate-ids{font-family:Consolas,Menlo,monospace;color:var(--dsw-alias-label-secondary);word-break:break-all}",
+
+    ".cbs-rate-promo{color:var(--dsw-static-orange-500,#f59e0b);border:1px solid var(--dsw-static-orange-500,#f59e0b);}",      ".cbs-rate-ids{font-family:Consolas,Menlo,monospace;color:var(--dsw-alias-label-secondary);word-break:break-all}",
       ".cbs-badge{display:inline-flex;align-items:center;gap:4px;height:18px;padding:0 7px;border-radius:9px;font-size:11px;white-space:nowrap}",
       ".cbs-badge-ok{color:var(--dsw-static-green-500,#22c55e);border:1px solid var(--dsw-static-green-500,#22c55e)}",
       ".cbs-badge-warn{color:var(--dsw-alias-state-warn-primary);border:1px solid var(--dsw-alias-state-warn-primary)}",
@@ -394,7 +395,7 @@ window.__ModuleLoader__.load({
       // 旧版后端不返回时退化为纯 id 列表，保证向前兼容。
       const opts = (cur && Array.isArray(cur.modelOptions) && cur.modelOptions.length)
         ? cur.modelOptions
-        : models.map(function (m) { return { id: m, label: m, credits: null, free: false, hasCredits: false, authorized: null }; });
+        : models.map(function (m) { return { id: m, label: m, credits: null, baseCredits: null, free: false, hasCredits: false, authorized: null, promotion: null }; });
       // v1.6.0：区分「账号已授权（实测可用）」与「目录里有但本账号未授权」。
       // 未授权的选中必报 400，必须让用户一眼看出，而不是选了才知道。
       const usable = opts.filter(function (o) { return o.authorized !== false; });
@@ -402,6 +403,9 @@ window.__ModuleLoader__.load({
       const freeOnes = usable.filter(function (o) { return o.free; });
       const priced = usable.filter(function (o) { return o.hasCredits && !o.free; });
       const unknown = usable.filter(function (o) { return !o.hasCredits; });
+      // v1.6.1：当前**生效中**的限时优惠（Free now / 夜间免费 / 限时免费）。
+      // 促销带生效时段，故只列此刻命中的，与 CLI 菜单显示一致。
+      const promotion = usable.filter(function (o) { return !!o.promotion; });
       return react.createElement("div", { className: "cbs-root" },
         react.createElement("div", null,
           react.createElement("div", { className: "cbs-h" }, "CodeBuddy 桥接"),
@@ -435,12 +439,17 @@ window.__ModuleLoader__.load({
                   react.createElement("span", { className: "cbs-rate-tag cbs-rate-unknown" }, "未标倍率"),
                   react.createElement("span", { className: "cbs-rate-ids" }, unknown.map(function (o) { return o.id; }).join("、")),
                 ) : null,
+                // v1.6.1：与 CLI 菜单里的「Free now / 夜间免费 / 限时免费」对齐。
+                promotion.length ? react.createElement("div", { className: "cbs-rate-row" },
+                  react.createElement("span", { className: "cbs-rate-tag cbs-rate-promo" }, "限时优惠 ×" + promotion.length),
+                  react.createElement("span", { className: "cbs-rate-ids" }, promotion.map(function (o) { return o.id + "（" + o.promotion.label + "）"; }).join("、")),
+                ) : null,
                 blocked.length ? react.createElement("div", { className: "cbs-rate-row" },
                   react.createElement("span", { className: "cbs-rate-tag cbs-rate-unknown" }, "未授权 ×" + blocked.length),
                   react.createElement("span", { className: "cbs-rate-ids" }, blocked.map(function (o) { return o.id; }).join("、")),
                 ) : null,
               ) : null,
-              react.createElement("div", { className: "cbs-note" }, "倍率取自该 CLI 的 product 描述文件（credits 字段），随 CLI 升级自动同步；倍率为消费系数，x0.00 即免费。未标倍率的型号表示该安装未提供该数据，不代表免费。")),
+              react.createElement("div", { className: "cbs-note" }, "倍率与限时优惠均取自该 CLI 的账号级配置（随账号与时间自动同步）：倍率是 models[].credits，限时优惠是 modelPromotions（如「夜间免费」每晚 23:00–次日 8:00 生效）。倍率为消费系数，x0.00 即免费；未标倍率表示该配置未提供该数据，不代表免费。")),
             react.createElement("label", { className: "cbs-label", htmlFor: "cbs-endpoint" }, "端点覆盖"),
             react.createElement("div", { className: "cbs-ctl" },
               react.createElement("input", { id: "cbs-endpoint", className: "cbs-input", value: form.endpointOverride, onChange: setField("endpointOverride"), placeholder: "留空 = 按登录域自动推导（推荐）", spellCheck: false }),

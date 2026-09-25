@@ -16,6 +16,7 @@ import {
   extractModelIds, readBackendModelCatalog, backendModelCatalog, parseAccountModels, BACKEND_MODEL_IDS,
   parseCreditValue, extractModelCredits, formatCreditLabel, modelCatalogDetailed, formatModelCatalogText,
   backendSettingsMeta, lookupModelCredits, rememberAccountCatalog, getAccountCatalog,
+  normalizeProductConfig, extractModelPromotions, isPromotionActive, activePromotionFor,
   resolveEnToken, readDshWorkbuddyToken
 } from '../core/codebuddy-core.mjs'
 
@@ -991,4 +992,206 @@ test('isLimited：401 认证失败/端点域不匹配不算限流（v1.3.0 真�
   assert.equal(isLimited({ ok: false, status: 'FAILED', stderr: 'connect ECONNREFUSED x:443' }), true)
   // 瞬时 CLI 错误路径不受影响（401 不是 error_during_execution，也不该被重试）
   assert.equal(isTransientCliError(en401), false)
+})
+
+
+// ── v1.6.1：账号级配置 + 促销（modelPromotions）───────────────────────────────
+//
+// 背景：用户第三次反馈「模型获取错误」，并给出 CLI 真实菜单。根因是此前的数据源
+// 层次不对 —— 安装目录的 product.json 只是**产品面默认值**，而用户菜单来自
+// **账号级配置**，只有后者带 modelPromotions（「Free now / 夜间免费 / 限时免费」）。
+// 实测对照（用户贴图逐条吻合）：
+//   国内版 hy4-preview 夜间免费 0.29x → 基础 x0.29 + promotion「夜间免费」
+//   国内版 hy3        限时免费 0.00x → 基础 x0.00 + promotion「限时免费」
+//   国际版 三个都是 Free now 0.00x   → 3 条 promotion「Free now」factor=0
+
+test('normalizeProductConfig：单对象与 [{userId,data}] 数组两种形态都要认', () => {
+  // 形态一：裸 product 对象（cache/acc-product-config-v3.json）
+  const single = normalizeProductConfig(JSON.stringify({ applicationName: 'WorkBuddy', models: [{ id: 'hy3' }] }))
+  assert.equal(single.applicationName, 'WorkBuddy')
+  assert.equal(single.models.length, 1)
+
+  // 形态二：local_storage/entry_*.info 的顶层数组，末尾条目最新 → 取最后一份
+  const arr = normalizeProductConfig(JSON.stringify([
+    { userId: 'old', data: { applicationName: 'OLD', models: [] } },
+    { userId: 'new', data: { applicationName: 'NEW', models: [{ id: 'hy4-preview' }] } }
+  ]))
+  assert.equal(arr.applicationName, 'NEW', '数组形态必须取最后一份（最新写入在末尾）')
+  assert.equal(arr.models[0].id, 'hy4-preview')
+
+  // 异常输入一律 null，不抛
+  assert.equal(normalizeProductConfig('not json'), null)
+  assert.equal(normalizeProductConfig(null), null)
+  assert.equal(normalizeProductConfig('[]'), null)
+})
+
+test('extractModelPromotions：解析 modelPromotions 并展开到每个 modelIds', () => {
+  const cfg = JSON.stringify({
+    modelPromotions: [
+      {
+        badge: { color: '#FF0000', label: 'Free now' },
+        discount: { discountedCredits: '0x', factor: 0, displayMode: 'replace' },
+        enabled: true,
+        modelIds: ['hy3', 'deepseek-v4.1-flash'],
+        priority: 200,
+        schedule: { timezone: 'Asia/Shanghai', validFrom: '2026-07-06T00:00:00+08:00', validUntil: '2026-11-01T00:00:00+08:00' }
+      },
+      // enabled:false 必须被忽略
+      { badge: { label: '已停用' }, modelIds: ['zzz'], enabled: false },
+      // 无 badge.label 或 modelIds 为空 → 跳过
+      { badge: {}, modelIds: ['yyy'], enabled: true },
+      { badge: { label: 'x' }, modelIds: [], enabled: true }
+    ]
+  })
+  const ps = extractModelPromotions(cfg)
+  assert.equal(ps.length, 2, '两个 modelIds 展开成两条，其余三种情况全部跳过')
+  assert.deepEqual(ps.map((p) => p.id).sort(), ['deepseek-v4.1-flash', 'hy3'])
+  assert.equal(ps[0].label, 'Free now')
+  assert.equal(ps[0].factor, 0)
+  assert.equal(ps[0].priority, 200)
+
+  // 无 modelPromotions 字段 → null（安装目录 product.json 就是这种）
+  assert.equal(extractModelPromotions(JSON.stringify({ models: [] })), null)
+})
+
+test('isPromotionActive：有效期 + 跨零点时段都要判对', () => {
+  // 「夜间免费」：每天 23:00–次日 8:00，跨零点
+  const night = {
+    label: '夜间免费',
+    schedule: {
+      daily: [{ start: '23:00', end: '8:00' }],
+      timezone: 'Asia/Shanghai',
+      validFrom: '2026-09-11T00:00:00+08:00',
+      validUntil: '2026-11-01T00:00:00+08:00'
+    }
+  }
+  const at = (h, m) => { const d = new Date('2026-09-20T00:00:00'); d.setHours(h, m, 0, 0); return d }
+  assert.equal(isPromotionActive(night, at(2, 0)), true, '凌晨 2:00 落在跨零点区间内')
+  assert.equal(isPromotionActive(night, at(23, 30)), true, '23:30 落在区间起点之后')
+  assert.equal(isPromotionActive(night, at(14, 0)), false, '白天 14:00 不在区间内')
+  assert.equal(isPromotionActive(night, at(8, 0)), false, 'end 为开区间，8:00 整点不算')
+  assert.equal(isPromotionActive(night, at(22, 59)), false, '22:59 尚未开始')
+
+  // 有效期外
+  const expired = { ...night, schedule: { ...night.schedule, validUntil: '2026-09-15T00:00:00+08:00' } }
+  assert.equal(isPromotionActive(expired, at(2, 0)), false, 'validUntil 之后失效')
+  const future = { ...night, schedule: { ...night.schedule, validFrom: '2026-10-01T00:00:00+08:00' } }
+  assert.equal(isPromotionActive(future, at(2, 0)), false, 'validFrom 之前不生效')
+
+  // 无 schedule.daily → 全天有效（「限时免费」就是这种）
+  const allDay = { label: '限时免费', schedule: { validFrom: '2026-07-06T00:00:00+08:00', validUntil: '2026-11-01T00:00:00+08:00' } }
+  assert.equal(isPromotionActive(allDay, at(14, 0)), true)
+  // 完全无 schedule → 视为始终生效
+  assert.equal(isPromotionActive({ label: 'x' }, at(14, 0)), true)
+})
+
+test('activePromotionFor：同一型号多条命中时取 priority 最大者', () => {
+  // 实测国内版 hy4-preview 有两条：白天一条（只挂角标、无 discount），
+  // 夜间一条（factor=0 真正免费）。priority 相同时保持先命中者。
+  const at = (h) => { const d = new Date('2026-09-20T00:00:00'); d.setHours(h, 0, 0, 0); return d }
+  const promos = [
+    { id: 'hy4-preview', label: '夜间免费', priority: 50, factor: null,
+      schedule: { daily: [{ start: '8:00', end: '23:00' }] } },
+    { id: 'hy4-preview', label: '夜间免费', priority: 50, factor: 0,
+      schedule: { daily: [{ start: '23:00', end: '8:00' }] } }
+  ]
+  assert.equal(activePromotionFor(promos, 'hy4-preview', at(14)).factor, null, '白天命中的是不带折扣的那条')
+  assert.equal(activePromotionFor(promos, 'hy4-preview', at(2)).factor, 0, '夜间命中的是 factor=0 那条')
+  assert.equal(activePromotionFor(promos, 'other', at(2)), null, '无关型号返回 null')
+  assert.equal(activePromotionFor(null, 'hy4-preview', at(2)), null, '无促销数据不抛错')
+})
+
+test('parseCreditValue：兼容 "x0.29" 与促销价的 "0.00x" 两种写法', () => {
+  // 前者来自 models[].credits，后者来自 modelPromotions[].discount.discountedCredits。
+  // v1.6.0 只认前者，导致「Free now」这类促销价的数值被读成 null。
+  assert.equal(parseCreditValue('x0.29 credits'), 0.29)
+  assert.equal(parseCreditValue('x0.00'), 0)
+  assert.equal(parseCreditValue('0.00x'), 0, '促销写法：数字在前')
+  assert.equal(parseCreditValue('0x'), 0, '促销写法：0x 即免费')
+  assert.equal(parseCreditValue('0.50x'), 0.5, '五折')
+  assert.equal(parseCreditValue(''), null)
+  assert.equal(parseCreditValue('abc'), null)
+})
+
+test('modelCatalogDetailed：促销命中时以促销价计入，标签挂促销名', () => {
+  // 构造一个「账号配置」文件，验证三层数据源合并后的最终标签
+  const accountCfg = JSON.stringify({
+    applicationName: 'WorkBuddy',
+    agents: [{ name: 'cli', models: ['hy3', 'hy4-preview', 'glm-5.2'] }],
+    models: [
+      { id: 'hy3', credits: 'x0.00' },
+      { id: 'hy4-preview', credits: 'x0.29' },
+      { id: 'glm-5.2', credits: 'x0.79' }
+    ],
+    modelPromotions: [
+      { badge: { label: '限时免费' }, discount: { discountedCredits: '0x', factor: 0 }, enabled: true,
+        modelIds: ['hy3'], priority: 200 },
+      { badge: { label: '夜间免费' }, discount: { discountedCredits: '0.00x', factor: 0 }, enabled: true,
+        modelIds: ['hy4-preview'], priority: 50,
+        schedule: { daily: [{ start: '23:00', end: '8:00' }] } }
+    ]
+  })
+  const io = {
+    readFileSync: (p) => { if (String(p).includes('acc-product-config')) return accountCfg; throw new Error('ENOENT') },
+    // 显式注入账号清单，避免依赖模块级 ACCOUNT_CATALOG_CACHE（其他用例会写入它）
+    accountModels: ['hy3', 'hy4-preview', 'glm-5.2'],
+    // 夜间 2:00：hy4-preview 的「夜间免费」应生效
+    now: (() => { const d = new Date('2026-09-20T00:00:00'); d.setHours(2, 0, 0, 0); return d })()
+  }
+  const items = modelCatalogDetailed('workbuddy', io)
+  const by = (id) => items.find((x) => x.id === id)
+
+  // hy3：基础免费 + 限时免费促销 → 免费，且挂促销名
+  assert.equal(by('hy3').label, 'hy3 · 免费 · 限时免费')
+  assert.equal(by('hy3').promotion.label, '限时免费')
+
+  // hy4-preview：夜间命中 factor=0 → 实付 0.29*0 = 0，原价仍保留在 baseCredits
+  assert.equal(by('hy4-preview').label, 'hy4-preview · 免费 · 夜间免费')
+  assert.equal(by('hy4-preview').baseCredits, 0.29, '原价必须保留，便于用户判断促销力度')
+  assert.equal(by('hy4-preview').credits, 0)
+
+  // glm-5.2：无促销命中 → 只挂倍率
+  assert.equal(by('glm-5.2').label, 'glm-5.2 · x0.79')
+  assert.equal(by('glm-5.2').promotion, null)
+})
+
+test('modelCatalogDetailed：带促销的文件优先于更新的旧缓存（国际版真实场景）', () => {
+  // 实测国际版：cache/acc-product-config-v3.json 停在旧时间点（37 项、无促销、
+  // 且没有 hy4-preview / deepseek-v4.1-flash），而 local_storage 快照才带三条
+  // Free now 促销。候选链里 cache 在前，若不特判就会遮蔽真实菜单。
+  const staleCache = JSON.stringify({
+    applicationName: 'workbuddy-ai',
+    models: [{ id: 'hy3', credits: 'x0.00' }, { id: 'old-only', credits: 'x0.10' }]
+  })
+  const liveSnap = JSON.stringify([{
+    userId: 'dc632238',
+    data: {
+      applicationName: 'workbuddy-ai',
+      agents: [{ name: 'cli', models: ['hy3', 'hy4-preview-f', 'deepseek-v4.1-flash'] }],
+      models: [
+        { id: 'hy3', credits: 'x0.00' },
+        { id: 'hy4-preview-f', credits: 'x0.00' },
+        { id: 'deepseek-v4.1-flash', credits: 'x0.00' }
+      ],
+      modelPromotions: [
+        { badge: { label: 'Free now' }, discount: { discountedCredits: '0x', factor: 0 }, enabled: true,
+          modelIds: ['hy3', 'hy4-preview-f', 'deepseek-v4.1-flash'], priority: 200 }
+      ]
+    }
+  }])
+  const io = {
+    readFileSync: (p) => {
+      const s = String(p)
+      if (s.includes('acc-product-config')) return staleCache
+      if (s.includes('local_storage')) return liveSnap
+      throw new Error('ENOENT')
+    }
+  }
+  const items = modelCatalogDetailed('codebuddy-en', io)
+  assert.ok(items.some((x) => x.id === 'hy4-preview-f'), '必须采用带促销的那份，hy4-preview-f 要在列')
+  assert.ok(!items.some((x) => x.id === 'old-only'), '旧缓存的独有型号不应出现')
+  for (const id of ['hy3', 'hy4-preview-f', 'deepseek-v4.1-flash']) {
+    const x = items.find((i) => i.id === id)
+    assert.equal(x.label, id + ' · 免费 · Free now', id + ' 应为免费并挂 Free now')
+  }
 })
