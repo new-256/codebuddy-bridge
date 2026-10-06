@@ -129,3 +129,15 @@ node scripts/audit-npm-sync.mjs  # npm↔git 全版本一致
 
 然后按任务性质查文档：发布/维护 → RELEASE-SOP；兼容性问题 → COMPATIBILITY；
 架构细节 → ARCHITECTURE；历史 → CHANGELOG §对应版本。
+
+
+---
+
+## 0.2.0 升级兼容确认（2026-10-07 金标准验证）
+
+- **本插件版本**: 1.6.2
+- **目标运行时**: DSH 0.2.0-rc.2
+- **验证方式**: 隔离目录安装 0.2.0-rc.2 全套依赖，用 dsh-app-boot@0.2.0-rc.2 官方 valuatePluginCompatibility 逻辑对本插件实跑
+- **结论**: ✅ **PASS — 无需 version-exemption，DSH 更新后可正常加载启动**
+- **关键事实**: 0.2.0 环境 react 为 18（>=18.2.0 <19），与本插件前端 peer 一致；本插件无阻塞性 @deepseek-ai/dsh peer 冲突
+- 详见总台账：C:\Users\lcl\Desktop\DSH插件开发\插件版本管控与交接文档.md §6
