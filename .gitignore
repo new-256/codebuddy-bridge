@@ -17,3 +17,5 @@ yarn-error.log*
 *.log
 tmp/
 .tmp/
+
+dsh-session-cleaner/
